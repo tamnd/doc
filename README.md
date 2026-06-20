@@ -18,6 +18,7 @@ What works today:
 - **M2** the full BSON value codec, the snapshot-isolation MVCC core (version chains, the watermark oracle, first-committer-wins conflict detection, and version GC), and the `Collection` layer that turns the heap, the `_id` index, and the oracle into snapshot-isolated `InsertOne` / `FindOne` / `Find` / `DeleteOne` / `CountDocuments` over an in-memory version overlay, verified byte for byte against a live MongoDB by the conformance oracle (158 cases).
 - **M3-a** the read query path: the cross-type BSON total order, the MQL match engine (the comparison, logical, element, array, and existence operators with MongoDB's null/missing and type-bracket rules), dotted-path resolution with array fan-out, and projection / sort / skip / limit shaping, wired through the `Find` surface and verified against live MongoDB (293 cases total).
 - **M3-b** the document-mutation write path: the field update operators (`$set`, `$unset`, `$inc`, `$mul`, `$min`, `$max`, `$rename`, `$currentDate`) over a lazily-decoded tree that re-encodes untouched subtrees byte for byte, `updateOne` / `updateMany` / `replaceOne`, the `findAndModify` family, and `distinct`, driven over the version overlay with `_id` immutability enforced, verified against live MongoDB (375 cases total).
+- **M3-c** secondary indexes and the query planner: the persistent index catalog, single-field, compound, multikey, unique, sparse, and partial indexes maintained on the commit path, the order-preserving field encoding, and a cost-based planner with a pull-based execution engine that chooses between a collection scan, an index scan, and a covered scan, with an `Explain` surface. The oracle confirms an index never changes a result across 126 read probes.
 
 The embedded `Open`/`DB`/`Collection` API and the `doc` binary land as later milestones fill in the layers above this foundation.
 
@@ -31,10 +32,12 @@ The embedded `Open`/`DB`/`Collection` API and the `doc` binary land as later mil
 | `pager`    | WAL-mode pager and 2Q buffer pool over the VFS.                      |
 | `storage`  | The storage SPI: the seam every layer above builds against.          |
 | `heap`     | Slotted-page document record store.                                  |
-| `index`    | B-tree indexes, starting with the `_id` index.                       |
+| `index`    | B-tree indexes, the `_id` index, and the order-preserving field encoding. |
 | `bson`     | BSON document codec, the cross-type total order, and order-preserving key encoding. |
 | `query`    | The MQL match engine, projection, sort, and distinct over BSON documents. |
 | `update`   | MongoDB update operators applied to BSON documents (no-op-aware).    |
+| `catalog`  | The persistent secondary-index registry and document-to-key extraction. |
+| `plan`     | The cost-based query planner and the pull-based execution engine.    |
 | `mvcc`     | Snapshot isolation: version chains, the oracle, conflict detection.  |
 | `oracle`   | Behavior-comparison test harness (reference vs subject).             |
 | `sys`      | Clock and id generation.                                             |
