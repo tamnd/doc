@@ -47,7 +47,7 @@ func (OSFS) Delete(path string, syncDir bool) error {
 		if err != nil {
 			return err
 		}
-		defer d.Close()
+		defer func() { _ = d.Close() }()
 		return d.Sync()
 	}
 	return nil

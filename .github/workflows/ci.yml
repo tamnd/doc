@@ -21,18 +21,19 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      CGO_ENABLED: 0
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
           check-latest: true
-      - name: build
-        run: go build ./...
+      # The shipped artifact is pure Go, so the build must pass with cgo off.
+      - name: build (pure Go)
+        run: CGO_ENABLED=0 go build ./...
       - name: vet
         run: go vet ./...
+      # The race detector needs cgo, so this step leaves CGO_ENABLED at its
+      # default. It exercises behavior, not the build, so cgo here is fine.
       - name: test (race + coverage)
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
       - name: coverage summary

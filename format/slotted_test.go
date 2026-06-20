@@ -106,13 +106,10 @@ func TestSlottedCompactReclaimsAndKeepsRIDs(t *testing.T) {
 	s := newHeapPage(t, PageSize8K)
 	// Fill with 200-byte cells.
 	const cellSize = 200
-	var slots []int
 	for i := 0; i < 10; i++ {
-		slot, err := s.AddCell(bytes.Repeat([]byte{byte(i)}, cellSize))
-		if err != nil {
+		if _, err := s.AddCell(bytes.Repeat([]byte{byte(i)}, cellSize)); err != nil {
 			t.Fatal(err)
 		}
-		slots = append(slots, slot)
 	}
 	// Delete the even slots, leaving holes.
 	for i := 0; i < 10; i += 2 {
@@ -147,13 +144,10 @@ func TestSlottedAddTriggersCompaction(t *testing.T) {
 	body := BodySize(PageSize4K)
 	// Each cell ~ body/4 so four fit; deleting then re-adding forces compaction.
 	cell := body/4 - 8
-	var slots []int
 	for i := 0; i < 4; i++ {
-		slot, err := s.AddCell(bytes.Repeat([]byte{byte(i)}, cell))
-		if err != nil {
+		if _, err := s.AddCell(bytes.Repeat([]byte{byte(i)}, cell)); err != nil {
 			t.Fatalf("initial add %d: %v", i, err)
 		}
-		slots = append(slots, slot)
 	}
 	// Delete two non-adjacent cells; their space is now fragmented holes.
 	if err := s.DeleteCell(0); err != nil {

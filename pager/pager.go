@@ -254,7 +254,7 @@ func (p *Pager) recover() (gen uint32, err error) {
 	if err != nil {
 		return 0, err
 	}
-	defer wf.Close()
+	defer func() { _ = wf.Close() }()
 
 	res, err := wal.Scan(wf, uint32(p.pageSize))
 	if err != nil {

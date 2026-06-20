@@ -26,7 +26,7 @@ func TestRIDEncodingOrderPreserving(t *testing.T) {
 	a := RID{PageNo: 1, Slot: 5}.Encode()
 	b := RID{PageNo: 1, Slot: 6}.Encode()
 	c := RID{PageNo: 2, Slot: 0}.Encode()
-	if !(a < b && b < c) {
+	if a >= b || b >= c {
 		t.Fatalf("RID encoding is not page-then-slot monotonic: %d %d %d", a, b, c)
 	}
 }

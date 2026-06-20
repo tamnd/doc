@@ -16,7 +16,6 @@ type fakeTarget struct {
 	execErr  error
 	resetErr error
 	resets   int
-	gotSetup []Op
 	gotProbe []Op
 	closed   bool
 }
