@@ -293,6 +293,15 @@ func (c *Collection) FindWith(filter bson.Raw, opts FindOptions) ([]bson.Raw, er
 	return t.FindWith(filter, opts)
 }
 
+// Explain returns the planner's explain document for a find, in its own read-only
+// transaction, at the given verbosity ("queryPlanner", "executionStats", or
+// "allPlansExecution").
+func (c *Collection) Explain(filter bson.Raw, opts FindOptions, verbosity string) (bson.Raw, error) {
+	t := c.BeginReadOnly()
+	defer func() { _ = t.Rollback() }()
+	return t.Explain(filter, opts, verbosity)
+}
+
 // DeleteOne deletes the first document matching filter, returning the number
 // deleted (0 or 1).
 func (c *Collection) DeleteOne(filter bson.Raw) (int64, error) {

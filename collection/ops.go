@@ -104,61 +104,32 @@ func (t *Txn) Find(filter bson.Raw) ([]bson.Raw, error) {
 	return t.FindWith(filter, FindOptions{})
 }
 
-// FindWith runs the full M3-a find pipeline: a filtered collection scan, then sort,
-// skip, limit, and projection in MongoDB's order (spec 2061 doc 11 §3). The filter
-// is the complete MQL match surface; the projection and sort are compiled from
-// their BSON documents. Documents are returned as independent clones.
+// FindWith runs the full find pipeline through the query planner: the planner picks
+// a collection scan or an index access path, then the execution engine applies the
+// residual filter, sort, skip, limit, and projection in MongoDB's order (spec 2061
+// doc 11 §3). Documents are returned as independent clones.
 func (t *Txn) FindWith(filter bson.Raw, opts FindOptions) ([]bson.Raw, error) {
 	if t.done {
 		return nil, ErrTxnDone
 	}
-	m, err := compileFilter(filter)
+	p, err := t.buildPlan(filter, opts)
 	if err != nil {
 		return nil, err
 	}
-	proj, err := query.CompileProjection(opts.Projection)
-	if err != nil {
-		return nil, err
-	}
-	srt, err := query.CompileSort(opts.Sort)
-	if err != nil {
-		return nil, err
-	}
-	var out []bson.Raw
-	for _, key := range t.scanKeys() {
-		doc := t.currentDoc(key)
-		if doc != nil && m.Match(doc) {
-			out = append(out, doc.Clone())
-		}
-	}
-	srt.Apply(out)
-	out = applySkipLimit(out, opts.Skip, opts.Limit)
-	for i := range out {
-		out[i], err = proj.Apply(out[i])
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
+	return p.Execute()
 }
 
-// applySkipLimit drops the first skip documents and caps the result at limit. A
-// negative limit is treated as its magnitude (MongoDB's single-batch limit), and a
-// zero limit means no cap.
-func applySkipLimit(docs []bson.Raw, skip, limit int64) []bson.Raw {
-	if skip > 0 {
-		if skip >= int64(len(docs)) {
-			return nil
-		}
-		docs = docs[skip:]
+// Explain returns the planner's explain document for a find at the given verbosity
+// ("queryPlanner", "executionStats", or "allPlansExecution").
+func (t *Txn) Explain(filter bson.Raw, opts FindOptions, verbosity string) (bson.Raw, error) {
+	if t.done {
+		return nil, ErrTxnDone
 	}
-	if limit < 0 {
-		limit = -limit
+	p, err := t.buildPlan(filter, opts)
+	if err != nil {
+		return nil, err
 	}
-	if limit > 0 && limit < int64(len(docs)) {
-		docs = docs[:limit]
-	}
-	return docs
+	return p.Explain(verbosity)
 }
 
 // DeleteOne deletes the first document matching filter and returns the number
