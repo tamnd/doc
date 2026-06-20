@@ -140,7 +140,7 @@ func (p *Plan) buildTree() (PlanStage, error) {
 	if !filterEmpty(p.req.Filter) {
 		root = newFilter(root, p.matcher, p.req.Filter)
 	}
-	if !sortEmpty(p.req.Sort) && !(p.cand != nil && p.cand.providesSort) {
+	if !sortEmpty(p.req.Sort) && (p.cand == nil || !p.cand.providesSort) {
 		root = newSort(root, p.sortc, p.req.Sort)
 	}
 	if p.req.Skip > 0 {
