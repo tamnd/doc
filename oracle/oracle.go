@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/tamnd/doc/bson"
+	"github.com/tamnd/doc/catalog"
 )
 
 // OpKind enumerates the operations the oracle can drive. The set grows as
@@ -60,6 +61,19 @@ type Op struct {
 	// findOneAndReplace; the default (false) returns the before version, matching
 	// MongoDB.
 	ReturnAfter bool
+
+	// Index describes the secondary index to build for OpCreateIndex; nil for every
+	// other kind.
+	Index *IndexModel
+}
+
+// IndexModel is the index specification for an OpCreateIndex op: the ordered key
+// and the option flags the planner and the unique check honor.
+type IndexModel struct {
+	Key    []catalog.KeyPart
+	Name   string
+	Unique bool
+	Sparse bool
 }
 
 // Result is the normalized outcome of an Op. Docs holds returned documents in a
