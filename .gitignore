@@ -1,0 +1,14 @@
+# Build artifacts
+/doc
+/dist/
+*.test
+*.out
+coverage.out
+
+# Database files produced by tests or local runs
+*.doc
+*.doc-wal
+*.doc-shm
+
+# Editor / OS
+.DS_Store
