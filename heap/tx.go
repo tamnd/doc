@@ -31,7 +31,7 @@ func (t *Tx) WriteVersion() uint64 { return t.version }
 func (t *Tx) IsReadOnly() bool { return t.readOnly }
 
 // LogRecord is a no-op in M1: the pager logs full page images on commit, so there
-// is no separate logical record to append (spec 2061 doc 05 — physical redo).
+// is no separate logical record to append (spec 2061 doc 05 - physical redo).
 func (t *Tx) LogRecord(pageNo uint32, offset uint16, before, after []byte) error { return nil }
 
 // Commit makes all writes durable through the pager's WAL group commit.

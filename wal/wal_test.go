@@ -289,7 +289,7 @@ func TestAppendCommitRejectsEmpty(t *testing.T) {
 
 // TestRecoveryAtEveryCommitBoundary is the WAL-level analogue of M1's exit
 // criterion: for a workload of N sequential commits, truncating the WAL at every
-// commit boundary must recover exactly the committed prefix up to that point —
+// commit boundary must recover exactly the committed prefix up to that point -
 // no more, no less.
 func TestRecoveryAtEveryCommitBoundary(t *testing.T) {
 	const commits = 40

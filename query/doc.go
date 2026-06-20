@@ -1,6 +1,6 @@
 // Package query is doc's MQL match, projection, and sort layer: the part of the
 // find path that turns a filter, a projection, and a sort document into functions
-// over stored BSON documents (spec 2061 doc 08, doc 11). It is storage-agnostic —
+// over stored BSON documents (spec 2061 doc 08, doc 11). It is storage-agnostic -
 // it operates on bson.Raw documents a caller supplies, so the collection layer
 // can drive it over either an in-memory overlay scan or, later, an index scan.
 //

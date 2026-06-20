@@ -128,7 +128,7 @@ func (s SlottedPage) CanAdd(payloadLen int) bool {
 // AddCell writes payload as a new cell and returns its slot number. It first
 // tries the contiguous gap; if that is too small but a compaction would free
 // enough room, it compacts and retries; otherwise it returns ErrNoSpace. payload
-// longer than a single page (maxCellLen) is rejected — the caller spills it to an
+// longer than a single page (maxCellLen) is rejected - the caller spills it to an
 // overflow chain.
 func (s SlottedPage) AddCell(payload []byte) (int, error) {
 	if len(payload) > maxCellLen {

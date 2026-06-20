@@ -91,7 +91,7 @@ func (w *Writer) appendFrame(pageID uint64, commitMarker uint32, payload []byte)
 
 // AppendCommit appends all frames of one transaction and stamps the last frame
 // with commitMarker = dbSizePages (always >= 1, since the header page exists),
-// making the batch the durable-commit signal. It returns the commit LSN — the
+// making the batch the durable-commit signal. It returns the commit LSN - the
 // frame_lsn of the last frame, which the MVCC layer uses as the version number
 // (spec 2061 doc 05 §9.5). Frames are appended but NOT fsync'd; the caller
 // invokes Sync (group commit batches the fsync across transactions).

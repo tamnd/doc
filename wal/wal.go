@@ -4,7 +4,7 @@
 // image of every page it dirtied, ends with a frame carrying a nonzero commit
 // marker, and fsyncs. Recovery walks the chain from the start, applies every
 // frame up to the last valid commit marker, and discards a torn or uncommitted
-// tail — restoring exactly the committed prefix and nothing else.
+// tail - restoring exactly the committed prefix and nothing else.
 //
 // The WAL knows nothing about documents: a frame says "page N now holds these
 // bytes," never "document X was updated." Everything document-specific lives
@@ -27,7 +27,7 @@ const WALHeaderSize = 32
 const FrameHeaderSize = 24
 
 // WALMagic is the WAL file signature at offset 0: "DWL\n". It also encodes byte
-// order — a reader on the wrong byte order reads a different magic and fails
+// order - a reader on the wrong byte order reads a different magic and fails
 // fast rather than misparsing frame offsets (spec 2061 doc 05 §6.1).
 const WALMagic uint32 = 0x44574C0A
 

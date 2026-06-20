@@ -123,7 +123,7 @@ func DecodePageHeader(p []byte) PageHeader {
 func BodySize(pageSize uint32) int { return int(pageSize) - PageHeaderSize - ChecksumSize }
 
 // ComputePageChecksum returns the checksum over bytes 0..pageSize-5 of p under
-// algo — the common header plus the body, but not the trailing four checksum
+// algo - the common header plus the body, but not the trailing four checksum
 // bytes themselves (spec 2061 doc 03 §4.4).
 func ComputePageChecksum(p []byte, algo ChecksumAlgo) uint32 {
 	return algo.Checksum(p[:len(p)-ChecksumSize])

@@ -1,7 +1,7 @@
 // Package oracle is the behavior-oracle harness: it runs the same operation
 // against a reference (MongoDB) and against the subject (doc) and diffs the
 // results, so every MQL feature is measured against MongoDB's actual behavior
-// (spec 2061 doc 19 §17). M0 ships the framework only — the Op vocabulary, the
+// (spec 2061 doc 19 §17). M0 ships the framework only - the Op vocabulary, the
 // Target seam, the result diff, and the case runner. The MongoDB target and the
 // doc target are wired in M2, when the first insert/find operations exist.
 package oracle
@@ -65,7 +65,7 @@ type Op struct {
 // Result is the normalized outcome of an Op. Docs holds returned documents in a
 // canonical order; N holds a numeric result (count, matched, modified); ErrCode
 // holds a non-empty error category when the operation failed. Two results are
-// equal when their Docs, N, and ErrCode all match — the diff deliberately
+// equal when their Docs, N, and ErrCode all match - the diff deliberately
 // compares semantic outcome, not driver-specific wire details.
 type Result struct {
 	Docs     []bson.Raw
