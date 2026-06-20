@@ -333,6 +333,25 @@ func (p *Pager) PageSize() int { return p.pageSize }
 // pages they format before handing them back for write-back.
 func (p *Pager) Checksum() format.ChecksumAlgo { return p.checksum }
 
+// CatalogRoot returns the root page of the catalog/_id-index B-tree, or
+// format.NullPage when none exists yet. In M1 (single collection, single index)
+// this header slot holds the _id index root directly; the catalog that will
+// eventually occupy it arrives in M3.
+func (p *Pager) CatalogRoot() uint32 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.hdr.CatalogRoot
+}
+
+// SetCatalogRoot persists root into the header and dirties page 0 so the change
+// is logged with the current transaction and made durable on the next Commit.
+func (p *Pager) SetCatalogRoot(root uint32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hdr.CatalogRoot = root
+	p.touchHeaderLocked()
+}
+
 // PageCount returns the number of pages the header records.
 func (p *Pager) PageCount() uint32 {
 	p.mu.Lock()
