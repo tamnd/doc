@@ -197,6 +197,55 @@ func TestSlottedUpdateInPlace(t *testing.T) {
 	}
 }
 
+func TestSlottedReplaceCell(t *testing.T) {
+	s := newHeapPage(t, PageSize8K)
+	a, _ := s.AddCell([]byte("alpha"))
+	b, _ := s.AddCell([]byte("bravo"))
+
+	// Grow slot a in place: its RID (slot number) is unchanged, its neighbor
+	// survives, and the new bytes read back.
+	if err := s.ReplaceCell(a, []byte("a much longer alpha payload")); err != nil {
+		t.Fatalf("grow replace: %v", err)
+	}
+	got, _ := s.Cell(a)
+	if string(got) != "a much longer alpha payload" {
+		t.Fatalf("cell a = %q after grow", got)
+	}
+	if got, _ := s.Cell(b); string(got) != "bravo" {
+		t.Fatalf("neighbor b = %q, want bravo", got)
+	}
+
+	// Shrink it back: still the same slot, neighbor still intact.
+	if err := s.ReplaceCell(a, []byte("hi")); err != nil {
+		t.Fatalf("shrink replace: %v", err)
+	}
+	if got, _ := s.Cell(a); string(got) != "hi" {
+		t.Fatalf("cell a = %q after shrink", got)
+	}
+	if got, _ := s.Cell(b); string(got) != "bravo" {
+		t.Fatalf("neighbor b = %q after shrink", got)
+	}
+}
+
+func TestSlottedReplaceCellNoSpace(t *testing.T) {
+	s := newHeapPage(t, PageSize4K)
+	a, _ := s.AddCell([]byte("x"))
+	// Fill the rest of the page so a's cell cannot grow even after compaction.
+	for s.FreeBytes() > 8 {
+		if _, err := s.AddCell(make([]byte, 64)); err != nil {
+			break
+		}
+	}
+	big := make([]byte, PageSize4K) // larger than any page can hold
+	if err := s.ReplaceCell(a, big); !errors.Is(err, ErrNoSpace) {
+		t.Fatalf("err = %v, want ErrNoSpace", err)
+	}
+	// The original cell must be untouched after a failed replace.
+	if got, _ := s.Cell(a); string(got) != "x" {
+		t.Fatalf("cell a = %q after failed replace, want x", got)
+	}
+}
+
 func TestSlottedForwarding(t *testing.T) {
 	s := newHeapPage(t, PageSize8K)
 	slot, _ := s.AddCell([]byte("original record bytes that are long enough"))

@@ -328,6 +328,11 @@ func (p *Pager) openFreshWAL() error {
 // PageSize returns the fixed page size in bytes.
 func (p *Pager) PageSize() int { return p.pageSize }
 
+// Checksum returns the page checksum algorithm the database was created with.
+// Layers above the pager (the heap's overflow chains) need it to stamp the
+// pages they format before handing them back for write-back.
+func (p *Pager) Checksum() format.ChecksumAlgo { return p.checksum }
+
 // PageCount returns the number of pages the header records.
 func (p *Pager) PageCount() uint32 {
 	p.mu.Lock()

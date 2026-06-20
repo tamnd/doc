@@ -111,6 +111,20 @@ func (s SlottedPage) liveTotal() int {
 	return total
 }
 
+// AvailBytes returns the largest cell payload the page could accept after a full
+// compaction, not counting the slot-directory entry the new cell would need. It
+// is the heap's free-space-directory accounting value: it reflects bytes locked
+// up by dead tombstones and superseded cells that a compaction would reclaim, not
+// just the contiguous gap that FreeBytes reports.
+func (s SlottedPage) AvailBytes() int { return s.bodyLen() - s.liveTotal() }
+
+// CanAdd reports whether a payload of payloadLen bytes can be placed on the page,
+// compacting if necessary. It mirrors AddCell's own success condition (room for
+// the payload plus one new slot-directory entry).
+func (s SlottedPage) CanAdd(payloadLen int) bool {
+	return s.bodyLen()-s.liveTotal() >= payloadLen+slotEntrySize
+}
+
 // AddCell writes payload as a new cell and returns its slot number. It first
 // tries the contiguous gap; if that is too small but a compaction would free
 // enough room, it compacts and retries; otherwise it returns ErrNoSpace. payload
@@ -172,6 +186,52 @@ func (s SlottedPage) UpdateInPlace(i int, payload []byte) error {
 		return ErrNoSpace
 	}
 	copy(s.body()[off:int(off)+len(payload)], payload)
+	return nil
+}
+
+// ReplaceCell rewrites slot i's cell with a new payload of a possibly different
+// length, keeping the slot number (and therefore the RID) stable. It is the
+// heap's same-page update path: the old cell's bytes are reclaimed and the new
+// payload is written into the page, compacting first if the contiguous gap is too
+// small. It returns ErrNoSpace when the page cannot hold the new payload even
+// after compaction (the heap then relocates the record and leaves a forwarding
+// tombstone); on that error slot i is left untouched. ErrBadSlot/ErrSlotDead are
+// returned as Cell does.
+func (s SlottedPage) ReplaceCell(i int, payload []byte) error {
+	if i < 0 || i >= s.SlotCount() {
+		return ErrBadSlot
+	}
+	off, oldLen := s.slotAt(i)
+	if off == cellOffsetDead || off == cellOffsetForward {
+		return ErrSlotDead
+	}
+	if len(payload) > maxCellLen {
+		return ErrNoSpace
+	}
+	// Same length is a straight overwrite with no space accounting.
+	if int(oldLen) == len(payload) {
+		copy(s.body()[off:int(off)+len(payload)], payload)
+		return nil
+	}
+	// Space available for slot i if its old cell is reclaimed: total reclaimable
+	// (bodyLen - liveTotal) plus the old cell's own bytes. No slot-directory growth,
+	// because we reuse slot i.
+	if s.bodyLen()-s.liveTotal()+int(oldLen) < len(payload) {
+		return ErrNoSpace
+	}
+	// Drop the old cell; its bytes become reclaimable. The contiguous gap is
+	// unchanged by this, so a fitting payload can still be written without a
+	// compaction when the gap alone is large enough.
+	s.setSlot(i, cellOffsetDead, 0)
+	if s.FreeBytes() < len(payload) {
+		s.Compact()
+	}
+	h := s.header()
+	cellOff := int(h.FreeEnd) - len(payload)
+	copy(s.body()[cellOff:cellOff+len(payload)], payload)
+	s.setSlot(i, uint16(cellOff), uint16(len(payload)))
+	h.FreeEnd = uint16(cellOff)
+	s.setHeader(h)
 	return nil
 }
 
