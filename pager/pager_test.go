@@ -183,7 +183,7 @@ func TestCheckpointShrinksWALAndPersists(t *testing.T) {
 
 // TestRecoveryAtEveryCommitBoundary is the pager-level M1 exit criterion: after
 // each committed insert, the durable bytes (main + WAL) must recover to exactly
-// the committed set of pages — no more, no less.
+// the committed set of pages - no more, no less.
 func TestRecoveryAtEveryCommitBoundary(t *testing.T) {
 	fs := vfs.NewMemFS()
 	p := mustOpen(t, fs, Options{Sync: SyncFull, PoolPages: 8, CheckpointFrames: 1 << 20})

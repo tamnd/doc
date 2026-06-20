@@ -17,7 +17,7 @@ func benchWAL(b *testing.B) vfs.File {
 }
 
 // BenchmarkAppendCommitSingle measures the cost of appending and fsyncing a
-// one-page commit — the single-document insert hot path.
+// one-page commit - the single-document insert hot path.
 func BenchmarkAppendCommitSingle(b *testing.B) {
 	f := benchWAL(b)
 	w, err := CreateWriter(f, NewHeader(testPageSize, 0, 1, 2))
@@ -40,7 +40,7 @@ func BenchmarkAppendCommitSingle(b *testing.B) {
 }
 
 // BenchmarkAppendCommitBatch measures a multi-page commit (a transaction that
-// dirtied several pages) amortizing one fsync across the batch — the group-commit
+// dirtied several pages) amortizing one fsync across the batch - the group-commit
 // shape.
 func BenchmarkAppendCommitBatch(b *testing.B) {
 	const pages = 16

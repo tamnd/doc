@@ -66,7 +66,7 @@ func (OSFS) Exists(path string) (bool, error) {
 }
 
 // ShmMap is not yet implemented by the os backend; the WAL index uses a
-// heap-backed region in M0–M5. It returns ErrNotImplemented.
+// heap-backed region in M0-M5. It returns ErrNotImplemented.
 func (OSFS) ShmMap(path string, region int, create bool) ([]byte, error) {
 	return nil, ErrNotImplemented
 }

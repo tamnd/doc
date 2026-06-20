@@ -1,7 +1,7 @@
 // Package storage defines the storage SPI seam: the narrow set of interfaces
 // between doc's document-level logic and the page-level substrate (pager, WAL,
 // MVCC, B-tree core) reused from kv (spec 2061 doc 04 §2). In M0 these are
-// definitions only — no implementation. The slotted-page record store (M1), the
+// definitions only - no implementation. The slotted-page record store (M1), the
 // _id and secondary indexes (M2, M3), and the MVCC transaction (M2) implement
 // them above the verified kv substrate.
 package storage

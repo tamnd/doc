@@ -201,7 +201,7 @@ func DecodeHeader(b []byte) (Header, error) {
 	if !ValidPageSize(h.PageSize) {
 		return h, ErrInvalidPageSize
 	}
-	// Step 7: feature flags — any bit outside the known set is treated as a
+	// Step 7: feature flags - any bit outside the known set is treated as a
 	// required feature we do not implement.
 	h.FeatureFlags = binary.LittleEndian.Uint64(b[64:72])
 	if h.FeatureFlags&^knownFeatureMask != 0 {

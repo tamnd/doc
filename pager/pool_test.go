@@ -20,7 +20,7 @@ func admitMiss(pl *pool, pageID uint64) *pool {
 // TestTwoQGhostPromotion drives the 2Q replacement policy directly: a page
 // evicted from the probation FIFO leaves a ghost, and re-referencing it while
 // the ghost is live promotes it to the hot am list (admit's ghost branch and
-// removeGhost). A sequential scan, by contrast, never promotes — that is the
+// removeGhost). A sequential scan, by contrast, never promotes - that is the
 // scan-resistance 2Q exists for.
 func TestTwoQGhostPromotion(t *testing.T) {
 	// capacity 4, kin = 4/4 -> 1, ghostCap = 4/2 -> 2.
@@ -56,7 +56,7 @@ func TestTwoQGhostPromotion(t *testing.T) {
 }
 
 // TestTwoQScanResistance confirms a pure sequential scan of distinct pages never
-// pollutes the hot am list — every page stays in the probation FIFO.
+// pollutes the hot am list - every page stays in the probation FIFO.
 func TestTwoQScanResistance(t *testing.T) {
 	pl := newPool(64, 5)
 	for id := uint64(1); id <= 100; id++ {

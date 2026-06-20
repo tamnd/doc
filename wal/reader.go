@@ -19,7 +19,7 @@ type Frame struct {
 // ScanResult is the outcome of a recovery scan over a WAL generation.
 type ScanResult struct {
 	// Committed holds every frame up to and including the last frame whose
-	// commit marker verified — the durable, committed prefix. Frames after the
+	// commit marker verified - the durable, committed prefix. Frames after the
 	// last commit marker (an in-flight transaction interrupted by the crash) are
 	// excluded: recovery restores the committed prefix and nothing else
 	// (spec 2061 doc 05 §1.1, §14).
@@ -37,7 +37,7 @@ type ScanResult struct {
 	// resume writer chains from it.
 	LastChecksum uint32
 	// TornTail is true when the scan stopped before clean EOF because a frame
-	// failed its checksum or was short — an interrupted append. The bytes past
+	// failed its checksum or was short - an interrupted append. The bytes past
 	// the durable prefix are discarded.
 	TornTail bool
 	// ScannedFrames is the total number of structurally-complete frames the scan
@@ -49,7 +49,7 @@ type ScanResult struct {
 // Scan walks a WAL file from its first frame, validating the salt-seeded checksum
 // chain, and returns the committed prefix (spec 2061 doc 05 §14.3). It stops at
 // the first frame that fails its checksum, is truncated, or is a short/zero read
-// — that frame and everything after it are an interrupted, uncommitted tail and
+// - that frame and everything after it are an interrupted, uncommitted tail and
 // are discarded. The committed prefix is everything up to the last frame whose
 // commit marker verified.
 //

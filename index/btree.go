@@ -37,6 +37,7 @@ type BTree struct {
 	unique  bool
 	bodyLen int
 	maxKey  int
+	onRoot  func(uint32) // persists a newly created/changed root page
 
 	mu        sync.Mutex
 	root      uint32
@@ -45,17 +46,41 @@ type BTree struct {
 
 // Open builds a BTree over an already-open pager. unique enables duplicate-key
 // rejection (the _id index is unique). The root is read from the pager's
-// catalog-root slot and created lazily on the first insert when absent.
+// catalog-root slot and created lazily on the first insert when absent. This is
+// the _id index constructor: the _id index owns the header's catalog-root slot.
 func Open(pgr *pager.Pager, collID uint32, unique bool) (*BTree, error) {
+	return OpenWithRoot(pgr, collID, unique, pgr.CatalogRoot(), pgr.SetCatalogRoot)
+}
+
+// OpenWithRoot builds a BTree whose root page is supplied explicitly and whose
+// root changes are reported through onRoot, so a secondary index can persist its
+// root in the catalog rather than the header's single catalog-root slot (spec
+// 2061 doc 07 §5.1, doc 09 §7.1). root is format.NullPage when the index has no
+// pages yet; the first insert allocates the root and calls onRoot with it. A nil
+// onRoot drops root notifications, for a throwaway in-memory tree.
+func OpenWithRoot(pgr *pager.Pager, collID uint32, unique bool, root uint32, onRoot func(uint32)) (*BTree, error) {
 	body := format.BodySize(uint32(pgr.PageSize()))
+	if onRoot == nil {
+		onRoot = func(uint32) {}
+	}
 	return &BTree{
 		pgr:     pgr,
 		collID:  collID,
 		unique:  unique,
 		bodyLen: body,
 		maxKey:  body / 4, // a single key plus its RID always leaves room to split
-		root:    pgr.CatalogRoot(),
+		onRoot:  onRoot,
+		root:    root,
 	}, nil
+}
+
+// Root returns the index's current root page number, or format.NullPage when the
+// tree is still empty. The catalog reads this after an index build to persist the
+// final root.
+func (t *BTree) Root() uint32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.root
 }
 
 // Begin starts a read-write index transaction; BeginReadOnly starts a read-only
@@ -322,7 +347,7 @@ func (t *BTree) Put(txn storage.Txn, key storage.IndexKey, rid storage.RID) erro
 			return err
 		}
 		t.root = root
-		t.pgr.SetCatalogRoot(root)
+		t.onRoot(root)
 		return nil
 	}
 
@@ -389,7 +414,7 @@ func (t *BTree) insertIntoParent(path []uint32, leftChild uint32, sep []byte, ri
 			return err
 		}
 		t.root = root
-		t.pgr.SetCatalogRoot(root)
+		t.onRoot(root)
 		return nil
 	}
 

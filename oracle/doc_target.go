@@ -164,6 +164,23 @@ func (d *DocTarget) Exec(op Op) (Result, error) {
 	case OpFindOneAndDelete:
 		return docFindModify(c.FindOneAndDelete(op.Filter, docFindModifyOpts(op)))
 
+	case OpCreateIndex:
+		if op.Index == nil {
+			return Result{}, errUnsupportedOp
+		}
+		if _, err := c.CreateIndex(collection.IndexModel{
+			Key:    op.Index.Key,
+			Name:   op.Index.Name,
+			Unique: op.Index.Unique,
+			Sparse: op.Index.Sparse,
+		}); err != nil {
+			if code, ok := errCode(err); ok {
+				return Result{ErrCode: code}, nil
+			}
+			return Result{}, err
+		}
+		return Result{N: 1}, nil
+
 	case OpDistinct:
 		vals, err := c.Distinct(op.Field, op.Filter)
 		if err != nil {
@@ -225,7 +242,7 @@ func docFindModifyOpts(op Op) collection.FindModifyOptions {
 }
 
 // errUnsupportedOp reports an Op kind the doc target does not implement yet
-// (aggregate, index); those arrive in later milestones.
+// (aggregate); those arrive in later milestones.
 var errUnsupportedOp = errors.New("oracle: operation kind not supported yet")
 
 // errCode maps a doc engine error to the oracle's normalized error category,

@@ -14,17 +14,17 @@ type FaultMode int
 const (
 	// FaultNone passes every operation through unchanged.
 	FaultNone FaultMode = iota
-	// FaultWrite fails a qualifying WriteAt with Err, writing nothing — a clean
+	// FaultWrite fails a qualifying WriteAt with Err, writing nothing - a clean
 	// I/O error (e.g. ENOSPC, EIO) surfaced as a value.
 	FaultWrite
-	// FaultSync fails a qualifying Sync with Err — the fsync-failure case
+	// FaultSync fails a qualifying Sync with Err - the fsync-failure case
 	// ("fsyncgate"), where data the caller believed durable is not.
 	FaultSync
 	// FaultTear writes only the first TearAt bytes of a qualifying WriteAt, then
-	// returns Err — a torn write left by power loss mid-write.
+	// returns Err - a torn write left by power loss mid-write.
 	FaultTear
 	// FaultDrop reports a qualifying WriteAt as fully successful but discards the
-	// bytes — a lost write, the drive's volatile cache evaporating at power loss.
+	// bytes - a lost write, the drive's volatile cache evaporating at power loss.
 	FaultDrop
 )
 

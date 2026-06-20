@@ -292,8 +292,9 @@ func (t *Txn) applyReplace(key string, doc, replacement bson.Raw) (bool, error) 
 // version, so only insertDoc is overwritten.
 func (t *Txn) bufferReplace(key string, newDoc bson.Raw) {
 	p := t.ensurePending(key)
-	if rid, ok := t.committedRID(key); ok {
+	if rid, old, ok := t.committedVersion(key); ok {
 		p.removeRID = rid
+		p.removeDoc = old
 		p.hasRemove = true
 	}
 	p.insertDoc = newDoc
@@ -302,8 +303,9 @@ func (t *Txn) bufferReplace(key string, newDoc bson.Raw) {
 // bufferDelete buffers a delete of an existing overlay key.
 func (t *Txn) bufferDelete(key string) {
 	p := t.ensurePending(key)
-	if rid, ok := t.committedRID(key); ok {
+	if rid, old, ok := t.committedVersion(key); ok {
 		p.removeRID = rid
+		p.removeDoc = old
 		p.hasRemove = true
 	}
 	p.insertDoc = nil

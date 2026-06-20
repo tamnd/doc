@@ -9,7 +9,7 @@ import (
 
 // fullSync flushes f to stable storage. On macOS, plain fsync does not flush the
 // drive's write cache, so both SyncFull and SyncData issue fcntl(F_FULLFSYNC),
-// which does — the same conclusion SQLite reaches (spec 2061 doc 05 §2.5). If
+// which does - the same conclusion SQLite reaches (spec 2061 doc 05 §2.5). If
 // F_FULLFSYNC is unsupported by the underlying file system, it falls back to
 // fsync rather than failing.
 func fullSync(f *os.File, mode SyncMode) error {

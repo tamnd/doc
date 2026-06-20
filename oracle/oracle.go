@@ -1,7 +1,7 @@
 // Package oracle is the behavior-oracle harness: it runs the same operation
 // against a reference (MongoDB) and against the subject (doc) and diffs the
 // results, so every MQL feature is measured against MongoDB's actual behavior
-// (spec 2061 doc 19 §17). M0 ships the framework only — the Op vocabulary, the
+// (spec 2061 doc 19 §17). M0 ships the framework only - the Op vocabulary, the
 // Target seam, the result diff, and the case runner. The MongoDB target and the
 // doc target are wired in M2, when the first insert/find operations exist.
 package oracle
@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/tamnd/doc/bson"
+	"github.com/tamnd/doc/catalog"
 )
 
 // OpKind enumerates the operations the oracle can drive. The set grows as
@@ -60,12 +61,25 @@ type Op struct {
 	// findOneAndReplace; the default (false) returns the before version, matching
 	// MongoDB.
 	ReturnAfter bool
+
+	// Index describes the secondary index to build for OpCreateIndex; nil for every
+	// other kind.
+	Index *IndexModel
+}
+
+// IndexModel is the index specification for an OpCreateIndex op: the ordered key
+// and the option flags the planner and the unique check honor.
+type IndexModel struct {
+	Key    []catalog.KeyPart
+	Name   string
+	Unique bool
+	Sparse bool
 }
 
 // Result is the normalized outcome of an Op. Docs holds returned documents in a
 // canonical order; N holds a numeric result (count, matched, modified); ErrCode
 // holds a non-empty error category when the operation failed. Two results are
-// equal when their Docs, N, and ErrCode all match — the diff deliberately
+// equal when their Docs, N, and ErrCode all match - the diff deliberately
 // compares semantic outcome, not driver-specific wire details.
 type Result struct {
 	Docs     []bson.Raw
