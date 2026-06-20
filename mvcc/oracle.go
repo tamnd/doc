@@ -48,21 +48,30 @@ func NewOracle(startCommitVer uint64) *Oracle {
 // version is held in the live set until the transaction commits or rolls back,
 // pinning the watermark for GC (spec 2061 doc 06 §5.1).
 func (o *Oracle) Begin(writable bool) *Txn {
-	o.mu.Lock()
-	startVer := o.commitVer
-	o.nextTxn++
-	tid := o.nextTxn
-	if len(o.live) == 0 {
-		o.minLive = startVer
-	}
-	o.live[startVer]++
-	o.mu.Unlock()
+	startVer, tid := o.Acquire()
 	return &Txn{
 		o:        o,
 		startVer: startVer,
 		txnID:    tid,
 		writable: writable,
 	}
+}
+
+// Acquire registers a snapshot at the current commit version and returns its
+// start version and a fresh transaction id. It is the lower-level primitive
+// behind Begin, exposed so a storage engine that manages its own version data
+// (the durable collection layer) can drive the oracle without an mvcc.Txn. The
+// caller must eventually Release the start version, or pass it to Commit.
+func (o *Oracle) Acquire() (startVer, txnID uint64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	startVer = o.commitVer
+	o.nextTxn++
+	if len(o.live) == 0 {
+		o.minLive = startVer
+	}
+	o.live[startVer]++
+	return startVer, o.nextTxn
 }
 
 // commit runs first-committer-wins conflict detection over the committed-since
@@ -74,48 +83,49 @@ func (o *Oracle) Begin(writable bool) *Txn {
 // published one (spec 2061 doc 06 §7.5). The snapshot is released and the index
 // pruned whether the commit succeeds or aborts, since the transaction is over
 // either way. A read-only or no-write transaction never reaches here.
-func (o *Oracle) commit(t *Txn, durable func() error, publish func(commitVer uint64)) (uint64, error) {
-	ws := t.sortedWriteSet()
-
+func (o *Oracle) Commit(startVer uint64, writeSet []uint64, durable func(commitVer uint64) error, publish func(commitVer uint64)) (uint64, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
 	for i := len(o.recent) - 1; i >= 0; i-- {
 		c := o.recent[i]
-		if c.commitVer <= t.startVer {
+		if c.commitVer <= startVer {
 			break // older entries committed at or before the snapshot cannot conflict
 		}
-		if intersects(c.writeSet, ws) {
-			o.releaseLocked(t.startVer)
+		if intersects(c.writeSet, writeSet) {
+			o.releaseLocked(startVer)
 			o.pruneLocked()
 			return 0, &ConflictError{ConflictVer: c.commitVer}
 		}
 	}
 
+	// The commit version is settled before the durable write so the durability
+	// layer can stamp it onto the records it persists; a durable failure aborts
+	// before o.commitVer advances, so the version is reused by the next commit.
+	cv := o.commitVer + 1
 	if durable != nil {
-		if err := durable(); err != nil {
-			o.releaseLocked(t.startVer)
+		if err := durable(cv); err != nil {
+			o.releaseLocked(startVer)
 			o.pruneLocked()
 			return 0, err
 		}
 	}
 
-	cv := o.commitVer + 1
 	// Install the versions stamped with cv before advancing o.commitVer, so no
 	// concurrent Begin can take a snapshot at cv until its data is in place.
 	if publish != nil {
 		publish(cv)
 	}
 	o.commitVer = cv
-	o.recent = append(o.recent, committedTxn{commitVer: cv, writeSet: ws})
-	o.releaseLocked(t.startVer)
+	o.recent = append(o.recent, committedTxn{commitVer: cv, writeSet: writeSet})
+	o.releaseLocked(startVer)
 	o.pruneLocked()
 	return cv, nil
 }
 
-// release deregisters a snapshot whose transaction ended without an assigned
+// Release deregisters a snapshot whose transaction ended without an assigned
 // commit version (a read-only commit or any rollback).
-func (o *Oracle) release(startVer uint64) {
+func (o *Oracle) Release(startVer uint64) {
 	o.mu.Lock()
 	o.releaseLocked(startVer)
 	o.pruneLocked()

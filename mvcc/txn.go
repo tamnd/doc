@@ -39,7 +39,7 @@ type engine interface {
 type Txn struct {
 	o       *Oracle
 	eng     engine
-	durable func() error // WAL fsync hook, run before the commit version is assigned
+	durable func(commitVer uint64) error // WAL fsync hook, run before the commit version is assigned
 
 	startVer  uint64
 	commitVer uint64
@@ -86,11 +86,11 @@ func (t *Txn) Commit() error {
 		return ErrTxnDone
 	}
 	if !t.writable || len(t.writeSet) == 0 {
-		t.o.release(t.startVer)
+		t.o.Release(t.startVer)
 		t.done = true
 		return nil
 	}
-	_, err := t.o.commit(t, t.durable, func(cv uint64) {
+	_, err := t.o.Commit(t.startVer, t.sortedWriteSet(), t.durable, func(cv uint64) {
 		t.commitVer = cv
 		if t.eng != nil {
 			t.eng.publish(t)
@@ -118,7 +118,7 @@ func (t *Txn) Rollback() error {
 	if t.eng != nil {
 		t.eng.discard(t)
 	}
-	t.o.release(t.startVer)
+	t.o.Release(t.startVer)
 	t.done = true
 	return nil
 }
