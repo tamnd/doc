@@ -59,6 +59,30 @@ func BenchmarkFindOneByID(b *testing.B) {
 	}
 }
 
+func BenchmarkUpdateOne(b *testing.B) {
+	c := benchColl(b)
+	const n = 10000
+	for i := 0; i < n; i++ {
+		if _, err := c.InsertOne(benchDoc(int64(i))); err != nil {
+			b.Fatal(err)
+		}
+	}
+	filter := bson.NewBuilder().AppendInt64("_id", n/2).Build()
+	upd := bson.NewBuilder().AppendDocument("$inc",
+		bson.NewBuilder().AppendInt32("score", 1).Build()).Build()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, err := c.UpdateOne(filter, upd)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if res.Modified != 1 {
+			b.Fatalf("modified = %d, want 1", res.Modified)
+		}
+	}
+}
+
 func BenchmarkCountDocuments(b *testing.B) {
 	c := benchColl(b)
 	const n = 10000

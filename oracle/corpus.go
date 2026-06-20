@@ -243,5 +243,9 @@ func Corpus() []Case {
 	// M3-a find surface: operators, null/missing, sort, projection, paging.
 	cases = append(cases, m3Cases()...)
 
+	// M3-b write surface: update operators, update/replace, findAndModify,
+	// distinct.
+	cases = append(cases, m3bCases()...)
+
 	return cases
 }

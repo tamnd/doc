@@ -7,8 +7,9 @@
 // latest committed version of every document, while the overlay holds, per _id,
 // the newest-first chain of versions a live snapshot might still need to read.
 // Reads are served from the overlay, so the durable heap is touched only on
-// commit and on Open (to rebuild the overlay). M2-c has no update; document
-// updates and secondary-index find paths arrive in M3.
+// commit and on Open (to rebuild the overlay). M3-b adds the update, replace,
+// findAndModify, and distinct write paths over this same overlay (see update.go);
+// secondary-index find paths arrive in M3-c.
 package collection
 
 import (
@@ -83,6 +84,7 @@ type Collection struct {
 	idx *index.BTree
 	orc *mvcc.Oracle
 	gen sys.IDGenerator
+	clk sys.Clock
 
 	mu    sync.Mutex
 	byID  map[string]*chain   // overlay key (encoded _id) -> version chain
@@ -117,12 +119,12 @@ func newCollection(pgr *pager.Pager, opts Options) (*Collection, error) {
 	if err != nil {
 		return nil, err
 	}
+	clock := opts.Clock
+	if clock == nil {
+		clock = sys.SystemClock{}
+	}
 	gen := opts.IDGen
 	if gen == nil {
-		clock := opts.Clock
-		if clock == nil {
-			clock = sys.SystemClock{}
-		}
 		gen = sys.NewObjectIDGenerator(clock)
 	}
 	c := &Collection{
@@ -130,6 +132,7 @@ func newCollection(pgr *pager.Pager, opts Options) (*Collection, error) {
 		hp:    hp,
 		idx:   idx,
 		gen:   gen,
+		clk:   clock,
 		byID:  make(map[string]*chain),
 		dirty: make(map[string]struct{}),
 	}
@@ -261,6 +264,79 @@ func (c *Collection) CountDocuments(filter bson.Raw) (int64, error) {
 	t := c.BeginReadOnly()
 	defer func() { _ = t.Rollback() }()
 	return t.CountDocuments(filter)
+}
+
+// UpdateOne applies an update-operator document to the first matching document in
+// its own transaction.
+func (c *Collection) UpdateOne(filter, updateDoc bson.Raw) (UpdateResult, error) {
+	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.UpdateOne(filter, updateDoc) })
+}
+
+// UpdateMany applies an update-operator document to every matching document in
+// its own transaction.
+func (c *Collection) UpdateMany(filter, updateDoc bson.Raw) (UpdateResult, error) {
+	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.UpdateMany(filter, updateDoc) })
+}
+
+// ReplaceOne replaces the first matching document in its own transaction.
+func (c *Collection) ReplaceOne(filter, replacement bson.Raw) (UpdateResult, error) {
+	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.ReplaceOne(filter, replacement) })
+}
+
+// FindOneAndUpdate updates the first matching document and returns the before or
+// after version, in its own transaction.
+func (c *Collection) FindOneAndUpdate(filter, updateDoc bson.Raw, opts FindModifyOptions) (bson.Raw, error) {
+	return c.inWriteDoc(func(t *Txn) (bson.Raw, error) { return t.FindOneAndUpdate(filter, updateDoc, opts) })
+}
+
+// FindOneAndReplace replaces the first matching document and returns the before
+// or after version, in its own transaction.
+func (c *Collection) FindOneAndReplace(filter, replacement bson.Raw, opts FindModifyOptions) (bson.Raw, error) {
+	return c.inWriteDoc(func(t *Txn) (bson.Raw, error) { return t.FindOneAndReplace(filter, replacement, opts) })
+}
+
+// FindOneAndDelete deletes the first matching document and returns it, in its own
+// transaction.
+func (c *Collection) FindOneAndDelete(filter bson.Raw, opts FindModifyOptions) (bson.Raw, error) {
+	return c.inWriteDoc(func(t *Txn) (bson.Raw, error) { return t.FindOneAndDelete(filter, opts) })
+}
+
+// Distinct returns the distinct values of field across the documents matching
+// filter, in its own read-only transaction.
+func (c *Collection) Distinct(field string, filter bson.Raw) ([]bson.RawValue, error) {
+	t := c.BeginReadOnly()
+	defer func() { _ = t.Rollback() }()
+	return t.Distinct(field, filter)
+}
+
+// inWrite runs fn in a write transaction, committing on success and rolling back
+// on error, for the count-returning write wrappers.
+func (c *Collection) inWrite(fn func(*Txn) (UpdateResult, error)) (UpdateResult, error) {
+	t := c.Begin()
+	res, err := fn(t)
+	if err != nil {
+		_ = t.Rollback()
+		return UpdateResult{}, err
+	}
+	if err := t.Commit(); err != nil {
+		return UpdateResult{}, err
+	}
+	return res, nil
+}
+
+// inWriteDoc runs fn in a write transaction for the document-returning
+// findAndModify wrappers, committing on success and rolling back on error.
+func (c *Collection) inWriteDoc(fn func(*Txn) (bson.Raw, error)) (bson.Raw, error) {
+	t := c.Begin()
+	doc, err := fn(t)
+	if err != nil {
+		_ = t.Rollback()
+		return nil, err
+	}
+	if err := t.Commit(); err != nil {
+		return nil, err
+	}
+	return doc, nil
 }
 
 // snapshotOrder returns a copy of the overlay keys in natural (first-insert)
