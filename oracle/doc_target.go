@@ -7,6 +7,7 @@ import (
 	"github.com/tamnd/doc/collection"
 	"github.com/tamnd/doc/storage"
 	"github.com/tamnd/doc/sys"
+	"github.com/tamnd/doc/update"
 	"github.com/tamnd/doc/vfs"
 )
 
@@ -145,14 +146,87 @@ func (d *DocTarget) Exec(op Op) (Result, error) {
 		}
 		return Result{N: n}, nil
 
+	case OpUpdateOne:
+		return docUpdateResult(c.UpdateOne(op.Filter, op.Update))
+
+	case OpUpdateMany:
+		return docUpdateResult(c.UpdateMany(op.Filter, op.Update))
+
+	case OpReplaceOne:
+		return docUpdateResult(c.ReplaceOne(op.Filter, op.Replacement))
+
+	case OpFindOneAndUpdate:
+		return docFindModify(c.FindOneAndUpdate(op.Filter, op.Update, docFindModifyOpts(op)))
+
+	case OpFindOneAndReplace:
+		return docFindModify(c.FindOneAndReplace(op.Filter, op.Replacement, docFindModifyOpts(op)))
+
+	case OpFindOneAndDelete:
+		return docFindModify(c.FindOneAndDelete(op.Filter, docFindModifyOpts(op)))
+
+	case OpDistinct:
+		vals, err := c.Distinct(op.Field, op.Filter)
+		if err != nil {
+			if code, ok := errCode(err); ok {
+				return Result{ErrCode: code}, nil
+			}
+			return Result{}, err
+		}
+		docs := make([]bson.Raw, len(vals))
+		for i, v := range vals {
+			docs[i] = WrapDistinctValue(v)
+		}
+		return Result{Docs: NormalizeDistinctDocs(docs)}, nil
+
 	default:
 		return Result{}, errUnsupportedOp
 	}
 }
 
-// errUnsupportedOp reports an Op kind the M2-c doc target does not implement yet
-// (update, aggregate, index, distinct); those arrive in later milestones.
-var errUnsupportedOp = errors.New("oracle: operation kind not supported in M2-c")
+// docUpdateResult normalizes a collection update/replace outcome into a Result
+// carrying the matched and modified counts.
+func docUpdateResult(res collection.UpdateResult, err error) (Result, error) {
+	if err != nil {
+		if code, ok := errCode(err); ok {
+			return Result{ErrCode: code}, nil
+		}
+		return Result{}, err
+	}
+	return Result{Matched: res.Matched, Modified: res.Modified}, nil
+}
+
+// docFindModify normalizes a findAndModify outcome: the returned document, or an
+// empty Result when nothing matched.
+func docFindModify(doc bson.Raw, err error) (Result, error) {
+	if err != nil {
+		if code, ok := errCode(err); ok {
+			return Result{ErrCode: code}, nil
+		}
+		return Result{}, err
+	}
+	if doc == nil {
+		return Result{}, nil
+	}
+	return Result{Docs: []bson.Raw{doc}}, nil
+}
+
+// docFindModifyOpts maps an Op's shaping fields to the collection's
+// findAndModify options.
+func docFindModifyOpts(op Op) collection.FindModifyOptions {
+	ret := collection.ReturnBefore
+	if op.ReturnAfter {
+		ret = collection.ReturnAfter
+	}
+	return collection.FindModifyOptions{
+		Sort:       op.Sort,
+		Projection: op.Projection,
+		Return:     ret,
+	}
+}
+
+// errUnsupportedOp reports an Op kind the doc target does not implement yet
+// (aggregate, index); those arrive in later milestones.
+var errUnsupportedOp = errors.New("oracle: operation kind not supported yet")
 
 // errCode maps a doc engine error to the oracle's normalized error category,
 // reporting ok=false for an error that is not a modeled behavioral outcome. The
@@ -164,6 +238,16 @@ func errCode(err error) (string, bool) {
 		return "DuplicateKey", true
 	case errors.Is(err, bson.ErrInvalidIDType):
 		return "InvalidID", true
+	case errors.Is(err, collection.ErrImmutableField):
+		return "ImmutableField", true
+	case errors.Is(err, update.ErrConflict):
+		return "ConflictingUpdateOperators", true
+	case errors.Is(err, update.ErrNotNumeric):
+		return "TypeMismatch", true
+	case errors.Is(err, update.ErrPathConflict):
+		return "PathNotViable", true
+	case errors.Is(err, update.ErrBadUpdate):
+		return "FailedToParse", true
 	default:
 		return "", false
 	}

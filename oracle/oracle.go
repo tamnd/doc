@@ -18,15 +18,20 @@ import (
 type OpKind string
 
 const (
-	OpInsertOne   OpKind = "insertOne"
-	OpFindOne     OpKind = "findOne"
-	OpFind        OpKind = "find"
-	OpDeleteOne   OpKind = "deleteOne"
-	OpUpdateOne   OpKind = "updateOne"
-	OpCount       OpKind = "countDocuments"
-	OpAggregate   OpKind = "aggregate"
-	OpCreateIndex OpKind = "createIndex"
-	OpDistinct    OpKind = "distinct"
+	OpInsertOne         OpKind = "insertOne"
+	OpFindOne           OpKind = "findOne"
+	OpFind              OpKind = "find"
+	OpDeleteOne         OpKind = "deleteOne"
+	OpUpdateOne         OpKind = "updateOne"
+	OpUpdateMany        OpKind = "updateMany"
+	OpReplaceOne        OpKind = "replaceOne"
+	OpFindOneAndUpdate  OpKind = "findOneAndUpdate"
+	OpFindOneAndReplace OpKind = "findOneAndReplace"
+	OpFindOneAndDelete  OpKind = "findOneAndDelete"
+	OpCount             OpKind = "countDocuments"
+	OpAggregate         OpKind = "aggregate"
+	OpCreateIndex       OpKind = "createIndex"
+	OpDistinct          OpKind = "distinct"
 )
 
 // Op is a single operation to drive against a target. Collection names the
@@ -34,13 +39,14 @@ const (
 // Pipeline carry MQL expressions as raw BSON. Unused fields are nil for a given
 // kind.
 type Op struct {
-	Kind       OpKind
-	Collection string
-	Doc        bson.Raw
-	Filter     bson.Raw
-	Update     bson.Raw
-	Pipeline   []bson.Raw
-	Field      string // for distinct
+	Kind        OpKind
+	Collection  string
+	Doc         bson.Raw
+	Filter      bson.Raw
+	Update      bson.Raw
+	Replacement bson.Raw // replaceOne / findOneAndReplace
+	Pipeline    []bson.Raw
+	Field       string // for distinct
 
 	// Find shaping (OpFind/OpFindOne): a projection and sort as raw BSON, and the
 	// skip/limit bounds. A nil Projection or Sort means none; a zero Limit means
@@ -49,6 +55,11 @@ type Op struct {
 	Sort       bson.Raw
 	Skip       int64
 	Limit      int64
+
+	// ReturnAfter selects the after version for findOneAndUpdate /
+	// findOneAndReplace; the default (false) returns the before version, matching
+	// MongoDB.
+	ReturnAfter bool
 }
 
 // Result is the normalized outcome of an Op. Docs holds returned documents in a
@@ -57,9 +68,11 @@ type Op struct {
 // equal when their Docs, N, and ErrCode all match — the diff deliberately
 // compares semantic outcome, not driver-specific wire details.
 type Result struct {
-	Docs    []bson.Raw
-	N       int64
-	ErrCode string
+	Docs     []bson.Raw
+	N        int64
+	Matched  int64 // matched count for update/replace
+	Modified int64 // modified count for update/replace
+	ErrCode  string
 }
 
 // Target is a system the oracle can drive: either the MongoDB reference or the
@@ -147,6 +160,12 @@ func compare(ref, sub Result) (string, bool) {
 	}
 	if ref.N != sub.N {
 		return fmt.Sprintf("n: ref=%d sub=%d", ref.N, sub.N), false
+	}
+	if ref.Matched != sub.Matched {
+		return fmt.Sprintf("matched: ref=%d sub=%d", ref.Matched, sub.Matched), false
+	}
+	if ref.Modified != sub.Modified {
+		return fmt.Sprintf("modified: ref=%d sub=%d", ref.Modified, sub.Modified), false
 	}
 	if len(ref.Docs) != len(sub.Docs) {
 		return fmt.Sprintf("docCount: ref=%d sub=%d", len(ref.Docs), len(sub.Docs)), false

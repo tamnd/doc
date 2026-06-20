@@ -139,7 +139,146 @@ func (m *MongoTarget) Exec(op oracle.Op) (oracle.Result, error) {
 		}
 		return oracle.Result{N: n}, nil
 
+	case oracle.OpUpdateOne:
+		res, err := c.UpdateOne(ctx, mongoFilter(op.Filter), mongoDoc(op.Update))
+		return mongoUpdateResult(res, err)
+
+	case oracle.OpUpdateMany:
+		res, err := c.UpdateMany(ctx, mongoFilter(op.Filter), mongoDoc(op.Update))
+		return mongoUpdateResult(res, err)
+
+	case oracle.OpReplaceOne:
+		res, err := c.ReplaceOne(ctx, mongoFilter(op.Filter), mongoDoc(op.Replacement))
+		return mongoUpdateResult(res, err)
+
+	case oracle.OpFindOneAndUpdate:
+		opts := moptions.FindOneAndUpdate()
+		applyFindModify(opts, op)
+		return mongoSingle(c.FindOneAndUpdate(ctx, mongoFilter(op.Filter), mongoDoc(op.Update), opts))
+
+	case oracle.OpFindOneAndReplace:
+		opts := moptions.FindOneAndReplace()
+		applyFindModifyReplace(opts, op)
+		return mongoSingle(c.FindOneAndReplace(ctx, mongoFilter(op.Filter), mongoDoc(op.Replacement), opts))
+
+	case oracle.OpFindOneAndDelete:
+		opts := moptions.FindOneAndDelete()
+		if len(op.Sort) > 0 {
+			opts.SetSort(mongoDoc(op.Sort))
+		}
+		if len(op.Projection) > 0 {
+			opts.SetProjection(mongoDoc(op.Projection))
+		}
+		return mongoSingle(c.FindOneAndDelete(ctx, mongoFilter(op.Filter), opts))
+
+	case oracle.OpDistinct:
+		res := c.Distinct(ctx, op.Field, mongoFilter(op.Filter))
+		if err := res.Err(); err != nil {
+			return oracle.Result{}, err
+		}
+		var vals []mbson.RawValue
+		if err := res.Decode(&vals); err != nil {
+			return oracle.Result{}, err
+		}
+		docs := make([]bson.Raw, 0, len(vals))
+		for _, v := range vals {
+			b, err := mbson.Marshal(mbson.D{{Key: "v", Value: v}})
+			if err != nil {
+				return oracle.Result{}, err
+			}
+			docs = append(docs, toRaw(b))
+		}
+		return oracle.Result{Docs: oracle.NormalizeDistinctDocs(docs)}, nil
+
 	default:
 		return oracle.Result{}, fmt.Errorf("conformance: unsupported op kind %q", op.Kind)
 	}
+}
+
+// mongoUpdateResult normalizes a driver UpdateResult, mapping a modeled write
+// error to a Result.ErrCode and other errors to a transport failure.
+func mongoUpdateResult(res *mdriver.UpdateResult, err error) (oracle.Result, error) {
+	if err != nil {
+		if code, ok := mongoErrCode(err); ok {
+			return oracle.Result{ErrCode: code}, nil
+		}
+		return oracle.Result{}, err
+	}
+	return oracle.Result{Matched: res.MatchedCount, Modified: res.ModifiedCount}, nil
+}
+
+// mongoSingle normalizes a findAndModify SingleResult into the returned document,
+// an empty result when nothing matched, or a modeled error code.
+func mongoSingle(sr *mdriver.SingleResult) (oracle.Result, error) {
+	var raw mbson.Raw
+	err := sr.Decode(&raw)
+	if errors.Is(err, mdriver.ErrNoDocuments) {
+		return oracle.Result{}, nil
+	}
+	if err != nil {
+		if code, ok := mongoErrCode(err); ok {
+			return oracle.Result{ErrCode: code}, nil
+		}
+		return oracle.Result{}, err
+	}
+	return oracle.Result{Docs: []bson.Raw{toRaw(raw)}}, nil
+}
+
+// applyFindModify sets the sort, projection, and return-document options shared by
+// findOneAndUpdate.
+func applyFindModify(opts *moptions.FindOneAndUpdateOptionsBuilder, op oracle.Op) {
+	if len(op.Sort) > 0 {
+		opts.SetSort(mongoDoc(op.Sort))
+	}
+	if len(op.Projection) > 0 {
+		opts.SetProjection(mongoDoc(op.Projection))
+	}
+	if op.ReturnAfter {
+		opts.SetReturnDocument(moptions.After)
+	} else {
+		opts.SetReturnDocument(moptions.Before)
+	}
+}
+
+// applyFindModifyReplace is applyFindModify for the findOneAndReplace builder.
+func applyFindModifyReplace(opts *moptions.FindOneAndReplaceOptionsBuilder, op oracle.Op) {
+	if len(op.Sort) > 0 {
+		opts.SetSort(mongoDoc(op.Sort))
+	}
+	if len(op.Projection) > 0 {
+		opts.SetProjection(mongoDoc(op.Projection))
+	}
+	if op.ReturnAfter {
+		opts.SetReturnDocument(moptions.After)
+	} else {
+		opts.SetReturnDocument(moptions.Before)
+	}
+}
+
+// mongoErrCode maps a driver write error to the oracle's normalized error
+// category by MongoDB's numeric error code, matching the doc target's categories.
+func mongoErrCode(err error) (string, bool) {
+	if mdriver.IsDuplicateKeyError(err) {
+		return "DuplicateKey", true
+	}
+	code := 0
+	var we mdriver.WriteException
+	if errors.As(err, &we) && len(we.WriteErrors) > 0 {
+		code = we.WriteErrors[0].Code
+	}
+	var ce mdriver.CommandError
+	if errors.As(err, &ce) {
+		code = int(ce.Code)
+	}
+	switch code {
+	case 66:
+		return "ImmutableField", true
+	case 40:
+		return "ConflictingUpdateOperators", true
+	case 14:
+		return "TypeMismatch", true
+	case 28:
+		return "PathNotViable", true
+	}
+	return "", false
 }
