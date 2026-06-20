@@ -115,6 +115,41 @@ func (b *Builder) AppendDocument(key string, doc Raw) *Builder {
 	return b
 }
 
+// AppendArray appends an array value already encoded as a Raw whose keys are the
+// ascending decimal indices "0", "1", ... (the BSON array representation). Build
+// the array body with BuildArray.
+func (b *Builder) AppendArray(key string, arr Raw) *Builder {
+	b.elem(TypeArray, key)
+	b.body = append(b.body, arr...)
+	return b
+}
+
+// BuildArray frames a sequence of values into a BSON array: a document whose keys
+// are the ascending decimal indices of the values. Append it with AppendArray.
+func BuildArray(vals ...RawValue) Raw {
+	b := NewBuilder()
+	for i, v := range vals {
+		b.AppendValue(itoa(i), v)
+	}
+	return b.Build()
+}
+
+// itoa renders a small non-negative int as a decimal string without importing
+// strconv into the hot builder path.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
 // Build frames the accumulated body into a finished document and returns it. The
 // returned Raw is a fresh allocation independent of the Builder's buffer.
 func (b *Builder) Build() Raw {
