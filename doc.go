@@ -6,13 +6,13 @@
 // MongoDB Query Language, and a future server mode answers the MongoDB wire
 // protocol so existing drivers connect unchanged.
 //
-// doc reuses the durable substrate of kv (github.com/tamnd/kv) — pager, buffer
-// pool, write-ahead log, group commit, crash recovery, and MVCC — through the
-// storage SPI in package storage, and builds the document-specific machinery
-// (slotted-page record store, BSON codec, MQL evaluation, aggregation pipeline,
-// indexes, wire protocol) above that verified seam. The full design is spec 2061
-// under notes/Spec/2061; the implementation notes are under
-// notes/Spec/2061/implementation.
+// The durable substrate (pager, buffer pool, write-ahead log, group commit,
+// crash recovery, and MVCC) lives in this module behind the storage SPI in
+// package storage, in packages pager, wal, and mvcc. Above that verified seam doc
+// builds the document-specific machinery: the slotted-page record store, the BSON
+// codec, MQL evaluation, the aggregation pipeline, indexes, and the wire protocol.
+// The full design is spec 2061 under notes/Spec/2061; the implementation notes
+// are under notes/Spec/2061/implementation.
 //
 // This is the module root. In M0 it carries only version and build identity; the
 // embedded Open/DB/Collection API (spec 2061 doc 14) lands as the milestones

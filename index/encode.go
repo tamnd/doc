@@ -73,7 +73,7 @@ func appendValueKey(dst []byte, v bson.RawValue) ([]byte, error) {
 	case bson.TypeTimestamp:
 		ts := v.Timestamp()
 		dst = append(dst, tagTimestamp)
-		dst = binary.BigEndian.AppendUint32(dst, uint32(ts>>32)) // ordinal (seconds)
+		dst = binary.BigEndian.AppendUint32(dst, uint32(ts>>32))   // ordinal (seconds)
 		return binary.BigEndian.AppendUint32(dst, uint32(ts)), nil // increment
 
 	case bson.TypeBinary:
