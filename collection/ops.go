@@ -1,0 +1,449 @@
+package collection
+
+import (
+	"errors"
+	"hash/fnv"
+	"slices"
+
+	"github.com/tamnd/doc/bson"
+	"github.com/tamnd/doc/storage"
+)
+
+// ErrTxnDone reports an operation on a transaction that already committed or
+// rolled back.
+var ErrTxnDone = errors.New("collection: transaction already finished")
+
+// Txn is a collection transaction: a snapshot taken at Begin plus a buffer of
+// writes that become visible only at Commit. Reads see the snapshot and the
+// transaction's own buffered writes (read-your-writes); a write conflict with a
+// transaction that committed since the snapshot aborts Commit with a retriable
+// error (spec 2061 doc 06 §7, §8).
+type Txn struct {
+	c        *Collection
+	startVer uint64
+	txnID    uint64
+	writable bool
+	done     bool
+
+	pending      map[string]*pendingOp // overlay key -> buffered write
+	order        []string              // pending keys in write order
+	insertedRIDs map[string]storage.RID
+}
+
+// pendingOp is one document's buffered write within a transaction. It captures the
+// net intent so a single _id touched several times in one transaction applies once
+// at commit: removeRID tombstones the prior committed version (a delete or the old
+// version of a re-insert), and insertDoc, when non-nil, is the new document.
+type pendingOp struct {
+	key       string
+	insertDoc bson.Raw
+	removeRID storage.RID
+	hasRemove bool
+}
+
+func (p *pendingOp) noop() bool { return p.insertDoc == nil && !p.hasRemove }
+
+// InsertOne buffers an insert and returns the stored _id. The document is deep
+// validated and normalized (an _id is minted when absent and moved first). A live
+// document with the same _id, committed or buffered in this transaction, is
+// rejected with ErrDuplicateKey.
+func (t *Txn) InsertOne(d bson.Raw) (bson.RawValue, error) {
+	if t.done {
+		return bson.RawValue{}, ErrTxnDone
+	}
+	if !t.writable {
+		return bson.RawValue{}, storage.ErrReadOnly
+	}
+	out, idv, err := bson.EnsureID(d, t.c.gen)
+	if err != nil {
+		return bson.RawValue{}, err
+	}
+	key, err := overlayKey(idv)
+	if err != nil {
+		return bson.RawValue{}, err
+	}
+	if t.currentDoc(key) != nil {
+		return bson.RawValue{}, ErrDuplicateKey
+	}
+	p := t.ensurePending(key)
+	p.insertDoc = out
+	return idv, nil
+}
+
+// FindOne returns a copy of the first document matching filter, or nil if none
+// match. M2-c supports the empty filter (match all, natural order) and top-level
+// field equality, with a fast path for an _id point lookup.
+func (t *Txn) FindOne(filter bson.Raw) (bson.Raw, error) {
+	if t.done {
+		return nil, ErrTxnDone
+	}
+	_, doc, err := t.findMatch(filter)
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil {
+		return nil, nil
+	}
+	return doc.Clone(), nil
+}
+
+// Find returns copies of every document matching filter in natural (first-insert)
+// order.
+func (t *Txn) Find(filter bson.Raw) ([]bson.Raw, error) {
+	if t.done {
+		return nil, ErrTxnDone
+	}
+	elems, err := parseFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+	var out []bson.Raw
+	for _, key := range t.scanKeys() {
+		doc := t.currentDoc(key)
+		if doc != nil && matchElems(doc, elems) {
+			out = append(out, doc.Clone())
+		}
+	}
+	return out, nil
+}
+
+// DeleteOne deletes the first document matching filter and returns the number
+// deleted (0 or 1).
+func (t *Txn) DeleteOne(filter bson.Raw) (int64, error) {
+	if t.done {
+		return 0, ErrTxnDone
+	}
+	if !t.writable {
+		return 0, storage.ErrReadOnly
+	}
+	key, doc, err := t.findMatch(filter)
+	if err != nil {
+		return 0, err
+	}
+	if doc == nil {
+		return 0, nil
+	}
+	p := t.ensurePending(key)
+	if rid, ok := t.committedRID(key); ok {
+		p.removeRID = rid
+		p.hasRemove = true
+	}
+	p.insertDoc = nil
+	return 1, nil
+}
+
+// CountDocuments returns the number of documents matching filter.
+func (t *Txn) CountDocuments(filter bson.Raw) (int64, error) {
+	if t.done {
+		return 0, ErrTxnDone
+	}
+	elems, err := parseFilter(filter)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, key := range t.scanKeys() {
+		doc := t.currentDoc(key)
+		if doc != nil && matchElems(doc, elems) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// Commit makes the transaction's buffered writes durable and visible. A read-only
+// transaction or one with no effective writes just releases its snapshot. A write
+// transaction runs conflict detection and the durable apply through the oracle
+// (durability before visibility), then publishes its versions into the overlay.
+func (t *Txn) Commit() error {
+	if t.done {
+		return ErrTxnDone
+	}
+	if !t.writable || !t.hasWrites() {
+		t.c.orc.Release(t.startVer)
+		t.done = true
+		t.c.gc()
+		return nil
+	}
+	_, err := t.c.orc.Commit(t.startVer, t.conflictKeys(), t.durable, t.publish)
+	t.done = true
+	t.c.gc()
+	return err
+}
+
+// Rollback discards the transaction's buffered writes and releases its snapshot.
+// Abort is free: nothing durable was written before commit, so there is nothing to
+// undo (spec 2061 doc 06 §7.6).
+func (t *Txn) Rollback() error {
+	if t.done {
+		return ErrTxnDone
+	}
+	t.c.orc.Release(t.startVer)
+	t.done = true
+	t.c.gc()
+	return nil
+}
+
+// ---- read helpers --------------------------------------------------------
+
+// currentDoc returns the document this transaction sees for an overlay key: its
+// own buffered write if it touched the key, otherwise the version visible at its
+// snapshot. A nil result means no live document.
+func (t *Txn) currentDoc(key string) bson.Raw {
+	if p, ok := t.pending[key]; ok {
+		return p.insertDoc
+	}
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	if ch, ok := t.c.byID[key]; ok {
+		return ch.visibleAt(t.startVer)
+	}
+	return nil
+}
+
+// committedRID returns the RID of the committed version visible at the snapshot,
+// or false when no committed live version exists (a brand-new insert in this
+// transaction, or a deleted key).
+func (t *Txn) committedRID(key string) (storage.RID, bool) {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	ch, ok := t.c.byID[key]
+	if !ok {
+		return storage.NullRID, false
+	}
+	for _, v := range ch.versions {
+		if v.commitVer <= t.startVer {
+			if v.doc == nil {
+				return storage.NullRID, false
+			}
+			return v.rid, true
+		}
+	}
+	return storage.NullRID, false
+}
+
+// findMatch returns the overlay key and document of the first match for filter,
+// using the _id index fast path for a sole-_id equality filter and a natural-order
+// scan otherwise.
+func (t *Txn) findMatch(filter bson.Raw) (string, bson.Raw, error) {
+	elems, err := parseFilter(filter)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(elems) == 1 && elems[0].Key == idFieldName {
+		key, kerr := overlayKey(elems[0].Value)
+		if kerr != nil {
+			return "", nil, kerr
+		}
+		if doc := t.currentDoc(key); doc != nil {
+			return key, doc, nil
+		}
+		return "", nil, nil
+	}
+	for _, key := range t.scanKeys() {
+		doc := t.currentDoc(key)
+		if doc != nil && matchElems(doc, elems) {
+			return key, doc, nil
+		}
+	}
+	return "", nil, nil
+}
+
+// scanKeys returns the overlay keys to walk for a natural-order scan: the
+// committed keys in first-insert order, followed by keys this transaction inserted
+// that are not yet committed.
+func (t *Txn) scanKeys() []string {
+	t.c.mu.Lock()
+	keys := t.c.snapshotOrder()
+	t.c.mu.Unlock()
+	seen := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		seen[k] = struct{}{}
+	}
+	for _, k := range t.order {
+		if _, ok := seen[k]; !ok {
+			keys = append(keys, k)
+			seen[k] = struct{}{}
+		}
+	}
+	return keys
+}
+
+// ---- write helpers -------------------------------------------------------
+
+func (t *Txn) ensurePending(key string) *pendingOp {
+	if t.pending == nil {
+		t.pending = make(map[string]*pendingOp)
+	}
+	p, ok := t.pending[key]
+	if !ok {
+		p = &pendingOp{key: key}
+		t.pending[key] = p
+		t.order = append(t.order, key)
+	}
+	return p
+}
+
+// hasWrites reports whether any buffered op has an effective durable effect.
+func (t *Txn) hasWrites() bool {
+	for _, key := range t.order {
+		if !t.pending[key].noop() {
+			return true
+		}
+	}
+	return false
+}
+
+// conflictKeys returns the sorted, deduplicated conflict-detection keys for the
+// transaction's effective writes: a 64-bit hash of each touched overlay key.
+func (t *Txn) conflictKeys() []uint64 {
+	set := make(map[uint64]struct{})
+	for _, key := range t.order {
+		if t.pending[key].noop() {
+			continue
+		}
+		set[hashKey(key)] = struct{}{}
+	}
+	out := make([]uint64, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// durable applies the buffered writes to the heap and _id index stamped with the
+// settled commit version, then drives one pager group commit. It runs under the
+// oracle lock before the versions are published, so a failure aborts the commit
+// before any version becomes visible (spec 2061 doc 06 §7.5). A failure mid-apply
+// leaves the inherited M1 single-writer ceiling: the dirty pages are not undone
+// (no per-transaction rollback yet), so a durable apply must be all-or-nothing in
+// practice; on the fault-free conformance path it always completes.
+func (t *Txn) durable(cv uint64) error {
+	wt := writeTxn{version: cv}
+	t.insertedRIDs = make(map[string]storage.RID)
+	for _, key := range t.order {
+		p := t.pending[key]
+		if p.hasRemove {
+			if err := t.c.hp.Delete(wt, p.removeRID); err != nil {
+				return err
+			}
+			if err := t.c.idx.Delete(wt, storage.IndexKey(key), p.removeRID); err != nil {
+				return err
+			}
+		}
+		if p.insertDoc != nil {
+			rid, err := t.c.hp.Insert(wt, p.insertDoc)
+			if err != nil {
+				return err
+			}
+			if err := t.c.idx.Put(wt, storage.IndexKey(key), rid); err != nil {
+				return err
+			}
+			t.insertedRIDs[key] = rid
+		}
+	}
+	return t.c.pgr.Commit()
+}
+
+// publish installs the transaction's new versions at the head of each overlay
+// chain, stamped with the commit version. It runs under the oracle lock so no
+// snapshot can be taken at cv until every version is in place.
+func (t *Txn) publish(cv uint64) {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	for _, key := range t.order {
+		p := t.pending[key]
+		if p.noop() {
+			continue
+		}
+		ch, ok := t.c.byID[key]
+		if !ok {
+			ch = &chain{}
+			t.c.byID[key] = ch
+			t.c.order = append(t.c.order, key)
+		}
+		nv := &docVersion{commitVer: cv, rid: storage.NullRID}
+		if p.insertDoc != nil {
+			nv.rid = t.insertedRIDs[key]
+			nv.doc = p.insertDoc
+		}
+		ch.versions = append([]*docVersion{nv}, ch.versions...)
+		if len(ch.versions) > 1 {
+			t.c.dirty[key] = struct{}{}
+		}
+	}
+}
+
+// ---- filter matching -----------------------------------------------------
+
+const idFieldName = "_id"
+
+// parseFilter decodes a filter document into its top-level equality predicates.
+// A nil or empty filter matches every document.
+func parseFilter(filter bson.Raw) ([]bson.Element, error) {
+	if len(filter) == 0 {
+		return nil, nil
+	}
+	if err := filter.WellFormed(); err != nil {
+		return nil, err
+	}
+	return filter.Elements()
+}
+
+// matchElems reports whether doc satisfies every top-level equality predicate.
+func matchElems(doc bson.Raw, elems []bson.Element) bool {
+	for _, e := range elems {
+		v, ok := doc.Lookup(e.Key)
+		if !ok || !valuesEqual(v, e.Value) {
+			return false
+		}
+	}
+	return true
+}
+
+// hashKey is the FNV-1a 64-bit hash of an overlay key, used as the oracle's
+// conflict-detection key. A collision would only ever cause a spurious, retriable
+// conflict, never a missed one, so it is safe for first-committer-wins.
+func hashKey(key string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	return h.Sum64()
+}
+
+// gc prunes overlay versions no live snapshot can still read: below the watermark
+// only the newest version per chain is kept. It runs outside the oracle lock and
+// visits only chains known to hold more than one version, so a read on a
+// single-version collection pays nothing.
+func (c *Collection) gc() {
+	wm := c.orc.Watermark()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.dirty {
+		ch := c.byID[key]
+		if ch == nil {
+			delete(c.dirty, key)
+			continue
+		}
+		ch.pruneBelow(wm)
+		if len(ch.versions) <= 1 {
+			delete(c.dirty, key)
+		}
+	}
+}
+
+// pruneBelow drops every version older than the newest version at or below wm,
+// which is the oldest a live snapshot at wm could read; versions above wm are all
+// retained.
+func (c *chain) pruneBelow(wm uint64) {
+	keep := len(c.versions)
+	for i, v := range c.versions {
+		if v.commitVer <= wm {
+			keep = i + 1
+			break
+		}
+	}
+	if keep < len(c.versions) {
+		c.versions = c.versions[:keep]
+	}
+}

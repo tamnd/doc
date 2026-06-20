@@ -15,7 +15,7 @@ What works today:
 
 - **M0** file format, the storage SPI seam, the WAL substrate, and the WAL-mode pager with a 2Q buffer pool.
 - **M1** the slotted-page record store with durable inserts and the `_id` B-tree over the storage seam.
-- **M2** the full BSON value codec and the snapshot-isolation MVCC core (version chains, the watermark oracle, first-committer-wins conflict detection, and version GC).
+- **M2** the full BSON value codec, the snapshot-isolation MVCC core (version chains, the watermark oracle, first-committer-wins conflict detection, and version GC), and the `Collection` layer that turns the heap, the `_id` index, and the oracle into snapshot-isolated `InsertOne` / `FindOne` / `Find` / `DeleteOne` / `CountDocuments` over an in-memory version overlay, verified byte for byte against a live MongoDB by the conformance oracle (158 cases).
 
 The embedded `Open`/`DB`/`Collection` API and the `doc` binary land as later milestones fill in the layers above this foundation.
 
