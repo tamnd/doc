@@ -1,11 +1,12 @@
-// Package bson holds the BSON value model for doc.
+// Package bson holds the BSON value model and codec for doc (spec 2061 doc 02).
 //
-// In M0 this package defines only the Raw byte-slice type that the storage SPI
-// (package storage) and the record store traffic in. The full BSON codec — the
-// type system, the order-preserving key encoding, comparison, and dotted-path
-// access — arrives in M2 (spec 2061 doc 02). Keeping Raw in its own package now
-// lets the storage interfaces name their payload type without pulling in a codec
-// that does not exist yet.
+// Raw is the opaque, length-prefixed document the storage SPI and record store
+// traffic in. On top of Raw, M2 adds the read side (Type, RawValue and its typed
+// accessors, Elements, Lookup, deep Validate) and the write side (Builder), plus
+// the `_id` normalization the write path needs (EnsureID, ValidIDType). The
+// order-preserving key encoding that turns these values into B-tree keys lives in
+// package index, driven by RawValue. Dotted-path access and the comparison engine
+// arrive with the query layer in M3.
 package bson
 
 import "errors"
@@ -37,23 +38,6 @@ var ErrLengthMismatch = errors.New("bson: length prefix does not match slice len
 func (r Raw) Len() int {
 	_ = r[3] // bounds-check hint; panics with a clear index error if too short
 	return int(uint32(r[0]) | uint32(r[1])<<8 | uint32(r[2])<<16 | uint32(r[3])<<24)
-}
-
-// Validate performs the cheap structural checks that every Raw must satisfy
-// before it is stored or returned: it is at least MinDocLen bytes, its length
-// prefix equals its slice length, and it is NUL-terminated. It deliberately does
-// not walk the element list — deep validation belongs to the codec in M2.
-func (r Raw) Validate() error {
-	if len(r) < MinDocLen {
-		return ErrTooShort
-	}
-	if r.Len() != len(r) {
-		return ErrLengthMismatch
-	}
-	if r[len(r)-1] != 0x00 {
-		return ErrLengthMismatch
-	}
-	return nil
 }
 
 // Clone returns a deep copy of r. The record store hands callers Raw values that

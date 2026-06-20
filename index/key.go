@@ -23,13 +23,19 @@ import (
 // Type tag bytes prefix every encoded key, ordering values by BSON type bracket
 // (spec 2061 doc 07 §3.3). Gaps are left for types that land in later milestones.
 const (
-	tagMinKey  = 0x01
-	tagNull    = 0x05
-	tagNumber  = 0x10 // Double, Int32, Int64, Decimal128 share one numeric order
-	tagString  = 0x20
-	tagObjectID = 0x48
-	tagBool    = 0x50
-	tagMaxKey  = 0xFF
+	tagMinKey    = 0x01
+	tagNull      = 0x05
+	tagNumber    = 0x10 // Double, Int32, Int64, Decimal128 share one numeric order
+	tagString    = 0x20 // String, Symbol, JavaScript
+	tagDocument  = 0x30
+	tagArray     = 0x38
+	tagBinary    = 0x40
+	tagObjectID  = 0x48
+	tagBool      = 0x50
+	tagDate      = 0x58
+	tagTimestamp = 0x60
+	tagRegex     = 0x68
+	tagMaxKey    = 0xFF
 )
 
 // ridSuffixLen is the fixed trailing RID appended to every index key (spec 2061

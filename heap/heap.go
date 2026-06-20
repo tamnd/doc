@@ -130,7 +130,7 @@ func (h *Heap) Insert(txn storage.Txn, doc bson.Raw) (storage.RID, error) {
 	if txn.IsReadOnly() {
 		return storage.NullRID, storage.ErrReadOnly
 	}
-	if err := doc.Validate(); err != nil {
+	if err := doc.WellFormed(); err != nil {
 		return storage.NullRID, err
 	}
 	if len(doc) > MaxDocSize {

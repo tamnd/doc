@@ -16,7 +16,7 @@ func (h *Heap) Update(txn storage.Txn, rid storage.RID, newDoc bson.Raw) (storag
 	if txn.IsReadOnly() {
 		return storage.NullRID, storage.ErrReadOnly
 	}
-	if err := newDoc.Validate(); err != nil {
+	if err := newDoc.WellFormed(); err != nil {
 		return storage.NullRID, err
 	}
 	if len(newDoc) > MaxDocSize {
