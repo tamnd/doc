@@ -16,6 +16,7 @@ What works today:
 - **M0** file format, the storage SPI seam, the WAL substrate, and the WAL-mode pager with a 2Q buffer pool.
 - **M1** the slotted-page record store with durable inserts and the `_id` B-tree over the storage seam.
 - **M2** the full BSON value codec, the snapshot-isolation MVCC core (version chains, the watermark oracle, first-committer-wins conflict detection, and version GC), and the `Collection` layer that turns the heap, the `_id` index, and the oracle into snapshot-isolated `InsertOne` / `FindOne` / `Find` / `DeleteOne` / `CountDocuments` over an in-memory version overlay, verified byte for byte against a live MongoDB by the conformance oracle (158 cases).
+- **M3-a** the read query path: the cross-type BSON total order, the MQL match engine (the comparison, logical, element, array, and existence operators with MongoDB's null/missing and type-bracket rules), dotted-path resolution with array fan-out, and projection / sort / skip / limit shaping, wired through the `Find` surface and verified against live MongoDB (293 cases total).
 
 The embedded `Open`/`DB`/`Collection` API and the `doc` binary land as later milestones fill in the layers above this foundation.
 
@@ -30,7 +31,8 @@ The embedded `Open`/`DB`/`Collection` API and the `doc` binary land as later mil
 | `storage`  | The storage SPI: the seam every layer above builds against.          |
 | `heap`     | Slotted-page document record store.                                  |
 | `index`    | B-tree indexes, starting with the `_id` index.                       |
-| `bson`     | BSON document codec and order-preserving key encoding.               |
+| `bson`     | BSON document codec, the cross-type total order, and order-preserving key encoding. |
+| `query`    | The MQL match engine, projection, and sort over BSON documents.      |
 | `mvcc`     | Snapshot isolation: version chains, the oracle, conflict detection.  |
 | `oracle`   | Behavior-comparison test harness (reference vs subject).             |
 | `sys`      | Clock and id generation.                                             |
