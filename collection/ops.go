@@ -39,6 +39,7 @@ type pendingOp struct {
 	key       string
 	insertDoc bson.Raw
 	removeRID storage.RID
+	removeDoc bson.Raw // the committed document being superseded, for secondary-index upkeep
 	hasRemove bool
 }
 
@@ -177,8 +178,9 @@ func (t *Txn) DeleteOne(filter bson.Raw) (int64, error) {
 		return 0, nil
 	}
 	p := t.ensurePending(key)
-	if rid, ok := t.committedRID(key); ok {
+	if rid, old, ok := t.committedVersion(key); ok {
 		p.removeRID = rid
+		p.removeDoc = old
 		p.hasRemove = true
 	}
 	p.insertDoc = nil
@@ -254,25 +256,25 @@ func (t *Txn) currentDoc(key string) bson.Raw {
 	return nil
 }
 
-// committedRID returns the RID of the committed version visible at the snapshot,
-// or false when no committed live version exists (a brand-new insert in this
-// transaction, or a deleted key).
-func (t *Txn) committedRID(key string) (storage.RID, bool) {
+// committedVersion returns the RID and document bytes of the committed version
+// visible at the snapshot. The document feeds secondary-index maintenance, which
+// must delete the exact entries the superseded version produced.
+func (t *Txn) committedVersion(key string) (storage.RID, bson.Raw, bool) {
 	t.c.mu.Lock()
 	defer t.c.mu.Unlock()
 	ch, ok := t.c.byID[key]
 	if !ok {
-		return storage.NullRID, false
+		return storage.NullRID, nil, false
 	}
 	for _, v := range ch.versions {
 		if v.commitVer <= t.startVer {
 			if v.doc == nil {
-				return storage.NullRID, false
+				return storage.NullRID, nil, false
 			}
-			return v.rid, true
+			return v.rid, v.doc, true
 		}
 	}
-	return storage.NullRID, false
+	return storage.NullRID, nil, false
 }
 
 // findMatch returns the overlay key and document of the first match for filter,
@@ -373,6 +375,13 @@ func (t *Txn) conflictKeys() []uint64 {
 func (t *Txn) durable(cv uint64) error {
 	wt := writeTxn{version: cv}
 	t.insertedRIDs = make(map[string]storage.RID)
+	// Pre-check unique secondary indexes against the live committed state before any
+	// page is mutated, so a duplicate aborts the commit without a partial write (the
+	// inherited M1 ceiling has no per-transaction undo). RIDs this transaction is
+	// itself removing are exempt, since their entries are deleted in the same commit.
+	if err := t.c.checkUniqueSecondary(t.pending, t.order); err != nil {
+		return err
+	}
 	for _, key := range t.order {
 		p := t.pending[key]
 		if p.hasRemove {
@@ -380,6 +389,9 @@ func (t *Txn) durable(cv uint64) error {
 				return err
 			}
 			if err := t.c.idx.Delete(wt, storage.IndexKey(key), p.removeRID); err != nil {
+				return err
+			}
+			if err := t.c.deleteSecondary(wt, p.removeDoc, p.removeRID); err != nil {
 				return err
 			}
 		}
@@ -391,8 +403,17 @@ func (t *Txn) durable(cv uint64) error {
 			if err := t.c.idx.Put(wt, storage.IndexKey(key), rid); err != nil {
 				return err
 			}
+			if err := t.c.insertSecondary(wt, p.insertDoc, rid); err != nil {
+				return err
+			}
 			t.insertedRIDs[key] = rid
 		}
+	}
+	if t.c.catalogDirty {
+		if err := t.c.cat.Stage(); err != nil {
+			return err
+		}
+		t.c.catalogDirty = false
 	}
 	return t.c.pgr.Commit()
 }
@@ -415,9 +436,13 @@ func (t *Txn) publish(cv uint64) {
 			t.c.order = append(t.c.order, key)
 		}
 		nv := &docVersion{commitVer: cv, rid: storage.NullRID}
+		if p.hasRemove {
+			delete(t.c.ridOwner, p.removeRID)
+		}
 		if p.insertDoc != nil {
 			nv.rid = t.insertedRIDs[key]
 			nv.doc = p.insertDoc
+			t.c.ridOwner[nv.rid] = key
 		}
 		ch.versions = append([]*docVersion{nv}, ch.versions...)
 		if len(ch.versions) > 1 {

@@ -125,10 +125,12 @@ func (s *Store) Remove(name string) (*IndexSpec, error) {
 	return nil, ErrIndexNotFound
 }
 
-// Save persists the current spec list as the single catalog record and group-
-// commits the pager, so the catalog write lands atomically with any index-build
-// page writes already buffered on the same pager (spec 2061 doc 09 §8.5).
-func (s *Store) Save() error {
+// Stage writes the current spec list into the catalog heap as the single catalog
+// record without committing the pager: the prior record is deleted and the new
+// one inserted, leaving the pages dirty. The caller drives the pager group commit,
+// so the catalog write can land atomically with index-build or maintenance page
+// writes buffered on the same pager (spec 2061 doc 09 §8.5).
+func (s *Store) Stage() error {
 	doc := encodeSpecs(s.specs)
 	tx := catalogTxn{}
 	if !s.rid.IsNull() {
@@ -142,6 +144,16 @@ func (s *Store) Save() error {
 		return err
 	}
 	s.rid = rid
+	return nil
+}
+
+// Save stages the spec list and group-commits the pager. It is the standalone
+// persistence path for tests and any caller not folding the catalog write into a
+// larger commit.
+func (s *Store) Save() error {
+	if err := s.Stage(); err != nil {
+		return err
+	}
 	return s.pgr.Commit()
 }
 

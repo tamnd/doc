@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/tamnd/doc/bson"
+	"github.com/tamnd/doc/catalog"
 	"github.com/tamnd/doc/heap"
 	"github.com/tamnd/doc/index"
 	"github.com/tamnd/doc/mvcc"
@@ -30,6 +31,13 @@ import (
 // is one collection per file; the catalog that multiplexes collections arrives in
 // M3 (spec 2061 doc 19 §22 M3).
 const collID = 1
+
+// secondaryCollIDBase is the first collection id handed to a secondary index's
+// B-tree pages. The document heap and _id index use collID (1), the catalog uses
+// catalog.CatalogCollID (2), so secondary indexes start above both. The id is a
+// page-ownership tag only: a secondary B-tree navigates from its catalog-recorded
+// root, never by scanning pages by collID (spec 2061 doc 07 §5.1).
+const secondaryCollIDBase = 16
 
 // ErrDuplicateKey reports an InsertOne whose _id already identifies a live
 // document. It unwraps to storage.ErrDuplicateKey so callers can match either,
@@ -86,10 +94,15 @@ type Collection struct {
 	gen sys.IDGenerator
 	clk sys.Clock
 
-	mu    sync.Mutex
-	byID  map[string]*chain   // overlay key (encoded _id) -> version chain
-	order []string            // overlay keys in first-insert order, for natural scan
-	dirty map[string]struct{} // keys whose chain holds more than one version
+	cat          *catalog.Store
+	sidx         map[string]*index.BTree // secondary index name -> live B-tree
+	catalogDirty bool                    // a secondary index root changed this commit
+
+	mu       sync.Mutex
+	byID     map[string]*chain      // overlay key (encoded _id) -> version chain
+	order    []string               // overlay keys in first-insert order, for natural scan
+	dirty    map[string]struct{}    // keys whose chain holds more than one version
+	ridOwner map[storage.RID]string // latest committed RID -> overlay key, for index fetch
 }
 
 // Open opens or creates the collection stored at path on fs, recovering the
@@ -127,14 +140,24 @@ func newCollection(pgr *pager.Pager, opts Options) (*Collection, error) {
 	if gen == nil {
 		gen = sys.NewObjectIDGenerator(clock)
 	}
+	cat, err := catalog.OpenStore(pgr)
+	if err != nil {
+		return nil, err
+	}
 	c := &Collection{
-		pgr:   pgr,
-		hp:    hp,
-		idx:   idx,
-		gen:   gen,
-		clk:   clock,
-		byID:  make(map[string]*chain),
-		dirty: make(map[string]struct{}),
+		pgr:      pgr,
+		hp:       hp,
+		idx:      idx,
+		gen:      gen,
+		clk:      clock,
+		cat:      cat,
+		sidx:     make(map[string]*index.BTree),
+		byID:     make(map[string]*chain),
+		dirty:    make(map[string]struct{}),
+		ridOwner: make(map[storage.RID]string),
+	}
+	if err := c.openSecondaryIndexes(); err != nil {
+		return nil, err
 	}
 	maxVer, err := c.rebuild()
 	if err != nil {
@@ -142,6 +165,31 @@ func newCollection(pgr *pager.Pager, opts Options) (*Collection, error) {
 	}
 	c.orc = mvcc.NewOracle(maxVer)
 	return c, nil
+}
+
+// openSecondaryIndexes opens a live B-tree for each spec the catalog recovered,
+// rooted at the spec's persisted root page. The onRoot hook records a later root
+// change (a first insert or a root split) back onto the spec so it is persisted on
+// the next catalog stage.
+func (c *Collection) openSecondaryIndexes() error {
+	for i, sp := range c.cat.Specs() {
+		bt, err := c.openIndexTree(secondaryCollIDBase+uint32(i), sp)
+		if err != nil {
+			return err
+		}
+		c.sidx[sp.Name] = bt
+	}
+	return nil
+}
+
+// openIndexTree opens one secondary B-tree for spec sp under the given page-
+// ownership collID. The onRoot callback persists root changes through the spec.
+func (c *Collection) openIndexTree(treeCollID uint32, sp *catalog.IndexSpec) (*index.BTree, error) {
+	spec := sp
+	return index.OpenWithRoot(c.pgr, treeCollID, spec.Unique, spec.Root, func(root uint32) {
+		spec.Root = root
+		c.catalogDirty = true
+	})
 }
 
 // rebuild populates the overlay from the durable heap, one version per live _id,
@@ -169,6 +217,7 @@ func (c *Collection) rebuild() (uint64, error) {
 			rid:       r.RID,
 			doc:       r.Doc,
 		}}}
+		c.ridOwner[r.RID] = key
 		if r.Version > maxVer {
 			maxVer = r.Version
 		}
