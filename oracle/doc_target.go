@@ -91,20 +91,32 @@ func (d *DocTarget) Exec(op Op) (Result, error) {
 		return Result{N: 1}, nil
 
 	case OpFindOne:
-		doc, err := c.FindOne(op.Filter)
+		// findOne is a find with the projection and sort applied, returning the
+		// first result, so it shares the shaping path with limit 1.
+		docs, err := c.FindWith(op.Filter, collection.FindOptions{
+			Projection: op.Projection,
+			Sort:       op.Sort,
+			Skip:       op.Skip,
+			Limit:      1,
+		})
 		if err != nil {
 			if code, ok := errCode(err); ok {
 				return Result{ErrCode: code}, nil
 			}
 			return Result{}, err
 		}
-		if doc == nil {
+		if len(docs) == 0 {
 			return Result{}, nil
 		}
-		return Result{Docs: []bson.Raw{doc}}, nil
+		return Result{Docs: docs[:1]}, nil
 
 	case OpFind:
-		docs, err := c.Find(op.Filter)
+		docs, err := c.FindWith(op.Filter, collection.FindOptions{
+			Projection: op.Projection,
+			Sort:       op.Sort,
+			Skip:       op.Skip,
+			Limit:      op.Limit,
+		})
 		if err != nil {
 			if code, ok := errCode(err); ok {
 				return Result{ErrCode: code}, nil

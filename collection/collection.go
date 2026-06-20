@@ -233,6 +233,14 @@ func (c *Collection) Find(filter bson.Raw) ([]bson.Raw, error) {
 	return t.Find(filter)
 }
 
+// FindWith returns every document matching filter, shaped by opts (projection,
+// sort, skip, limit), in its own read-only transaction.
+func (c *Collection) FindWith(filter bson.Raw, opts FindOptions) ([]bson.Raw, error) {
+	t := c.BeginReadOnly()
+	defer func() { _ = t.Rollback() }()
+	return t.FindWith(filter, opts)
+}
+
 // DeleteOne deletes the first document matching filter, returning the number
 // deleted (0 or 1).
 func (c *Collection) DeleteOne(filter bson.Raw) (int64, error) {
