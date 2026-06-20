@@ -41,6 +41,14 @@ type Op struct {
 	Update     bson.Raw
 	Pipeline   []bson.Raw
 	Field      string // for distinct
+
+	// Find shaping (OpFind/OpFindOne): a projection and sort as raw BSON, and the
+	// skip/limit bounds. A nil Projection or Sort means none; a zero Limit means
+	// no cap.
+	Projection bson.Raw
+	Sort       bson.Raw
+	Skip       int64
+	Limit      int64
 }
 
 // Result is the normalized outcome of an Op. Docs holds returned documents in a

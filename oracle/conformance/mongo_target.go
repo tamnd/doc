@@ -77,8 +77,18 @@ func (m *MongoTarget) Exec(op oracle.Op) (oracle.Result, error) {
 		return oracle.Result{N: 1}, nil
 
 	case oracle.OpFindOne:
+		opts := moptions.FindOne()
+		if len(op.Sort) > 0 {
+			opts.SetSort(mongoDoc(op.Sort))
+		}
+		if len(op.Projection) > 0 {
+			opts.SetProjection(mongoDoc(op.Projection))
+		}
+		if op.Skip > 0 {
+			opts.SetSkip(op.Skip)
+		}
 		var raw mbson.Raw
-		err := c.FindOne(ctx, mongoFilter(op.Filter)).Decode(&raw)
+		err := c.FindOne(ctx, mongoFilter(op.Filter), opts).Decode(&raw)
 		if errors.Is(err, mdriver.ErrNoDocuments) {
 			return oracle.Result{}, nil
 		}
@@ -88,7 +98,20 @@ func (m *MongoTarget) Exec(op oracle.Op) (oracle.Result, error) {
 		return oracle.Result{Docs: []bson.Raw{toRaw(raw)}}, nil
 
 	case oracle.OpFind:
-		cur, err := c.Find(ctx, mongoFilter(op.Filter))
+		opts := moptions.Find()
+		if len(op.Sort) > 0 {
+			opts.SetSort(mongoDoc(op.Sort))
+		}
+		if len(op.Projection) > 0 {
+			opts.SetProjection(mongoDoc(op.Projection))
+		}
+		if op.Skip > 0 {
+			opts.SetSkip(op.Skip)
+		}
+		if op.Limit != 0 {
+			opts.SetLimit(op.Limit)
+		}
+		cur, err := c.Find(ctx, mongoFilter(op.Filter), opts)
 		if err != nil {
 			return oracle.Result{}, err
 		}

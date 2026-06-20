@@ -240,5 +240,8 @@ func Corpus() []Case {
 	add(Case{Name: "empty/count", Probe: countOp(nil)})
 	add(Case{Name: "empty/delete", Probe: delOneOp(filtI32(1))})
 
+	// M3-a find surface: operators, null/missing, sort, projection, paging.
+	cases = append(cases, m3Cases()...)
+
 	return cases
 }
