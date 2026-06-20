@@ -1,9 +1,6 @@
 package collection
 
 import (
-	"bytes"
-
-	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/storage"
 )
 
@@ -25,12 +22,3 @@ func (w writeTxn) Commit() error                                                
 func (w writeTxn) Rollback() error                                                    { return nil }
 
 var _ storage.Txn = writeTxn{}
-
-// valuesEqual reports whether two BSON values are equal for M2-c's exact-match
-// filter and the conformance corpus: identical type and identical payload bytes.
-// Cross-type numeric equality (5 == 5.0) and the full comparison order arrive
-// with the query engine in M3 (spec 2061 doc 02 §7); the corpus stays within
-// same-type equality until then.
-func valuesEqual(a, b bson.RawValue) bool {
-	return a.Type == b.Type && bytes.Equal(a.Data, b.Data)
-}

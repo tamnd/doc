@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/tamnd/doc/bson"
+	"github.com/tamnd/doc/query"
 	"github.com/tamnd/doc/storage"
 )
 
@@ -87,24 +88,76 @@ func (t *Txn) FindOne(filter bson.Raw) (bson.Raw, error) {
 	return doc.Clone(), nil
 }
 
+// FindOptions carries the optional shaping stages of a find: a projection, a sort,
+// and skip/limit bounds. The zero value is a plain filtered scan in natural order.
+type FindOptions struct {
+	Projection bson.Raw
+	Sort       bson.Raw
+	Skip       int64
+	Limit      int64
+}
+
 // Find returns copies of every document matching filter in natural (first-insert)
 // order.
 func (t *Txn) Find(filter bson.Raw) ([]bson.Raw, error) {
+	return t.FindWith(filter, FindOptions{})
+}
+
+// FindWith runs the full M3-a find pipeline: a filtered collection scan, then sort,
+// skip, limit, and projection in MongoDB's order (spec 2061 doc 11 §3). The filter
+// is the complete MQL match surface; the projection and sort are compiled from
+// their BSON documents. Documents are returned as independent clones.
+func (t *Txn) FindWith(filter bson.Raw, opts FindOptions) ([]bson.Raw, error) {
 	if t.done {
 		return nil, ErrTxnDone
 	}
-	elems, err := parseFilter(filter)
+	m, err := compileFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+	proj, err := query.CompileProjection(opts.Projection)
+	if err != nil {
+		return nil, err
+	}
+	srt, err := query.CompileSort(opts.Sort)
 	if err != nil {
 		return nil, err
 	}
 	var out []bson.Raw
 	for _, key := range t.scanKeys() {
 		doc := t.currentDoc(key)
-		if doc != nil && matchElems(doc, elems) {
+		if doc != nil && m.Match(doc) {
 			out = append(out, doc.Clone())
 		}
 	}
+	srt.Apply(out)
+	out = applySkipLimit(out, opts.Skip, opts.Limit)
+	for i := range out {
+		out[i], err = proj.Apply(out[i])
+		if err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
+}
+
+// applySkipLimit drops the first skip documents and caps the result at limit. A
+// negative limit is treated as its magnitude (MongoDB's single-batch limit), and a
+// zero limit means no cap.
+func applySkipLimit(docs []bson.Raw, skip, limit int64) []bson.Raw {
+	if skip > 0 {
+		if skip >= int64(len(docs)) {
+			return nil
+		}
+		docs = docs[skip:]
+	}
+	if limit < 0 {
+		limit = -limit
+	}
+	if limit > 0 && limit < int64(len(docs)) {
+		docs = docs[:limit]
+	}
+	return docs
 }
 
 // DeleteOne deletes the first document matching filter and returns the number
@@ -137,14 +190,14 @@ func (t *Txn) CountDocuments(filter bson.Raw) (int64, error) {
 	if t.done {
 		return 0, ErrTxnDone
 	}
-	elems, err := parseFilter(filter)
+	m, err := compileFilter(filter)
 	if err != nil {
 		return 0, err
 	}
 	var n int64
 	for _, key := range t.scanKeys() {
 		doc := t.currentDoc(key)
-		if doc != nil && matchElems(doc, elems) {
+		if doc != nil && m.Match(doc) {
 			n++
 		}
 	}
@@ -226,23 +279,21 @@ func (t *Txn) committedRID(key string) (storage.RID, bool) {
 // using the _id index fast path for a sole-_id equality filter and a natural-order
 // scan otherwise.
 func (t *Txn) findMatch(filter bson.Raw) (string, bson.Raw, error) {
-	elems, err := parseFilter(filter)
+	m, err := compileFilter(filter)
 	if err != nil {
 		return "", nil, err
 	}
-	if len(elems) == 1 && elems[0].Key == idFieldName {
-		key, kerr := overlayKey(elems[0].Value)
-		if kerr != nil {
-			return "", nil, kerr
-		}
-		if doc := t.currentDoc(key); doc != nil {
+	if key, ok, kerr := idEqualityKey(filter); kerr != nil {
+		return "", nil, kerr
+	} else if ok {
+		if doc := t.currentDoc(key); doc != nil && m.Match(doc) {
 			return key, doc, nil
 		}
 		return "", nil, nil
 	}
 	for _, key := range t.scanKeys() {
 		doc := t.currentDoc(key)
-		if doc != nil && matchElems(doc, elems) {
+		if doc != nil && m.Match(doc) {
 			return key, doc, nil
 		}
 	}
@@ -379,27 +430,41 @@ func (t *Txn) publish(cv uint64) {
 
 const idFieldName = "_id"
 
-// parseFilter decodes a filter document into its top-level equality predicates.
-// A nil or empty filter matches every document.
-func parseFilter(filter bson.Raw) ([]bson.Element, error) {
-	if len(filter) == 0 {
-		return nil, nil
-	}
-	if err := filter.WellFormed(); err != nil {
-		return nil, err
-	}
-	return filter.Elements()
-}
-
-// matchElems reports whether doc satisfies every top-level equality predicate.
-func matchElems(doc bson.Raw, elems []bson.Element) bool {
-	for _, e := range elems {
-		v, ok := doc.Lookup(e.Key)
-		if !ok || !valuesEqual(v, e.Value) {
-			return false
+// compileFilter validates and compiles a filter document into a query.Matcher. A
+// nil or empty filter compiles to a match-all matcher.
+func compileFilter(filter bson.Raw) (*query.Matcher, error) {
+	if len(filter) > 0 {
+		if err := filter.WellFormed(); err != nil {
+			return nil, err
 		}
 	}
-	return true
+	return query.Compile(filter)
+}
+
+// idEqualityKey reports the overlay key for a filter that is a single _id equality
+// against a scalar value, enabling the index point-lookup fast path. A filter with
+// more fields, a non-_id field, or an _id matched by an operator document or a
+// composite value is not eligible and falls back to a scan.
+func idEqualityKey(filter bson.Raw) (string, bool, error) {
+	if len(filter) == 0 {
+		return "", false, nil
+	}
+	elems, err := filter.Elements()
+	if err != nil {
+		return "", false, err
+	}
+	if len(elems) != 1 || elems[0].Key != idFieldName {
+		return "", false, nil
+	}
+	v := elems[0].Value
+	if v.Type == bson.TypeDocument || v.Type == bson.TypeArray {
+		return "", false, nil
+	}
+	key, kerr := overlayKey(v)
+	if kerr != nil {
+		return "", false, kerr
+	}
+	return key, true, nil
 }
 
 // hashKey is the FNV-1a 64-bit hash of an overlay key, used as the oracle's
