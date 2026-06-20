@@ -171,6 +171,69 @@ func BenchmarkFindCoveredScan(b *testing.B) {
 	}
 }
 
+// BenchmarkInsertMany measures a batch insert of 100 documents in one
+// transaction against the per-document InsertOne loop the same data would take.
+func BenchmarkInsertMany(b *testing.B) {
+	const batch = 100
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		c := benchColl(b)
+		docs := make([]bson.Raw, batch)
+		for j := 0; j < batch; j++ {
+			docs[j] = benchDoc(int64(j))
+		}
+		b.StartTimer()
+		if _, err := c.InsertMany(docs, true); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkBulkWriteMixed measures a mixed batch of inserts and updates committed
+// together.
+func BenchmarkBulkWriteMixed(b *testing.B) {
+	const n = 1000
+	c := benchColl(b)
+	for i := 0; i < n; i++ {
+		if _, err := c.InsertOne(benchDoc(int64(i))); err != nil {
+			b.Fatal(err)
+		}
+	}
+	upd := bson.NewBuilder().AppendDocument("$inc",
+		bson.NewBuilder().AppendInt32("score", 1).Build()).Build()
+	ops := make([]BulkOp, 0, 20)
+	for i := 0; i < 20; i++ {
+		ops = append(ops, UpdateOneOp{Filter: bson.NewBuilder().AppendInt64("_id", int64(i)).Build(), Update: upd})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.BulkWrite(ops, true); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkUpsertInsert measures the upsert insert branch building a document from
+// the filter and update.
+func BenchmarkUpsertInsert(b *testing.B) {
+	upd := bson.NewBuilder().AppendDocument("$set",
+		bson.NewBuilder().AppendInt32("score", 1).Build()).Build()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		c := benchColl(b)
+		filter := bson.NewBuilder().AppendInt64("k", int64(i)).Build()
+		b.StartTimer()
+		if _, err := c.UpdateOneWith(filter, upd, UpdateOptions{Upsert: true}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkCountDocuments(b *testing.B) {
 	c := benchColl(b)
 	const n = 10000

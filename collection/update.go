@@ -21,11 +21,14 @@ var ErrImmutableField = errors.New("collection: _id is immutable")
 // UpdateResult reports the outcome of an update or replace: Matched documents
 // satisfied the filter, and Modified is the subset whose contents actually
 // changed (a no-op update, such as $set to a field's current value, matches
-// without modifying). Upserts arrive in M4, so Upserted is always zero here
-// (spec 2061 doc 13 §2.3).
+// without modifying). When an upsert inserts a document, Matched and Modified are
+// zero, Upserted is one, and UpsertedID holds the inserted _id (spec 2061 doc 13
+// §2.3, §11.6).
 type UpdateResult struct {
-	Matched  int64
-	Modified int64
+	Matched    int64
+	Modified   int64
+	Upserted   int64
+	UpsertedID bson.RawValue
 }
 
 // ReturnDocument selects which version findOneAndUpdate / findOneAndReplace
@@ -46,17 +49,30 @@ type FindModifyOptions struct {
 	Sort       bson.Raw
 	Projection bson.Raw
 	Return     ReturnDocument
+	Upsert     bool
 }
 
 // UpdateOne applies an update-operator document to the first document matching
 // filter. It returns the matched and modified counts (each 0 or 1).
 func (t *Txn) UpdateOne(filter, updateDoc bson.Raw) (UpdateResult, error) {
-	return t.updateOne(filter, updateDoc)
+	return t.updateOne(filter, updateDoc, UpdateOptions{})
+}
+
+// UpdateOneWith is UpdateOne with options, notably Upsert: when nothing matches
+// and Upsert is set, a document is built from the filter and update and inserted.
+func (t *Txn) UpdateOneWith(filter, updateDoc bson.Raw, opts UpdateOptions) (UpdateResult, error) {
+	return t.updateOne(filter, updateDoc, opts)
 }
 
 // UpdateMany applies an update-operator document to every document matching
 // filter, returning the total matched and modified counts.
 func (t *Txn) UpdateMany(filter, updateDoc bson.Raw) (UpdateResult, error) {
+	return t.UpdateManyWith(filter, updateDoc, UpdateOptions{})
+}
+
+// UpdateManyWith is UpdateMany with options. With Upsert set and no document
+// matching, it inserts a single document (matching MongoDB's at-most-one upsert).
+func (t *Txn) UpdateManyWith(filter, updateDoc bson.Raw, opts UpdateOptions) (UpdateResult, error) {
 	if t.done {
 		return UpdateResult{}, ErrTxnDone
 	}
@@ -86,12 +102,15 @@ func (t *Txn) UpdateMany(filter, updateDoc bson.Raw) (UpdateResult, error) {
 			res.Modified++
 		}
 	}
+	if res.Matched == 0 && opts.Upsert {
+		return t.upsertUpdate(filter, u)
+	}
 	return res, nil
 }
 
 // updateOne is the shared single-document update path used by UpdateOne and
 // findOneAndUpdate's matched branch.
-func (t *Txn) updateOne(filter, updateDoc bson.Raw) (UpdateResult, error) {
+func (t *Txn) updateOne(filter, updateDoc bson.Raw, opts UpdateOptions) (UpdateResult, error) {
 	if t.done {
 		return UpdateResult{}, ErrTxnDone
 	}
@@ -107,6 +126,9 @@ func (t *Txn) updateOne(filter, updateDoc bson.Raw) (UpdateResult, error) {
 		return UpdateResult{}, err
 	}
 	if doc == nil {
+		if opts.Upsert {
+			return t.upsertUpdate(filter, u)
+		}
 		return UpdateResult{}, nil
 	}
 	modified, err := t.applyOperatorUpdate(key, doc, u)
@@ -124,6 +146,12 @@ func (t *Txn) updateOne(filter, updateDoc bson.Raw) (UpdateResult, error) {
 // non-operator document. The original _id is preserved; a replacement that
 // carries a different _id is rejected with ErrImmutableField.
 func (t *Txn) ReplaceOne(filter, replacement bson.Raw) (UpdateResult, error) {
+	return t.ReplaceOneWith(filter, replacement, UpdateOptions{})
+}
+
+// ReplaceOneWith is ReplaceOne with options. With Upsert set and no match, the
+// replacement is inserted (the _id comes from the filter when it pins one).
+func (t *Txn) ReplaceOneWith(filter, replacement bson.Raw, opts UpdateOptions) (UpdateResult, error) {
 	if t.done {
 		return UpdateResult{}, ErrTxnDone
 	}
@@ -138,6 +166,9 @@ func (t *Txn) ReplaceOne(filter, replacement bson.Raw) (UpdateResult, error) {
 		return UpdateResult{}, err
 	}
 	if doc == nil {
+		if opts.Upsert {
+			return t.upsertReplace(filter, replacement)
+		}
 		return UpdateResult{}, nil
 	}
 	modified, err := t.applyReplace(key, doc, replacement)
@@ -149,6 +180,47 @@ func (t *Txn) ReplaceOne(filter, replacement bson.Raw) (UpdateResult, error) {
 		res.Modified = 1
 	}
 	return res, nil
+}
+
+// upsertUpdate builds and inserts a document for an operator-update upsert and
+// reports it as an UpdateResult.
+func (t *Txn) upsertUpdate(filter bson.Raw, u *update.Update) (UpdateResult, error) {
+	_, id, err := t.upsertWithUpdate(filter, u)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	return UpdateResult{Upserted: 1, UpsertedID: id}, nil
+}
+
+// upsertReplace builds and inserts a document for a replacement upsert and
+// reports it as an UpdateResult.
+func (t *Txn) upsertReplace(filter, replacement bson.Raw) (UpdateResult, error) {
+	_, id, err := t.upsertWithReplacement(filter, replacement)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	return UpdateResult{Upserted: 1, UpsertedID: id}, nil
+}
+
+// upsertReturn is the findAndModify upsert branch: it inserts the constructed
+// document (from u for an update or replacement for a replace) and returns it for
+// ReturnAfter, or nil for ReturnBefore (MongoDB returns the pre-image, which does
+// not exist on an insert). The returned document is projected per opts.
+func (t *Txn) upsertReturn(filter bson.Raw, u *update.Update, replacement bson.Raw, opts FindModifyOptions) (bson.Raw, error) {
+	var newDoc bson.Raw
+	var err error
+	if u != nil {
+		newDoc, _, err = t.upsertWithUpdate(filter, u)
+	} else {
+		newDoc, _, err = t.upsertWithReplacement(filter, replacement)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if opts.Return != ReturnAfter {
+		return nil, nil
+	}
+	return projectReturn(newDoc, opts.Projection)
 }
 
 // FindOneAndUpdate applies an update-operator document to the first document
@@ -166,8 +238,14 @@ func (t *Txn) FindOneAndUpdate(filter, updateDoc bson.Raw, opts FindModifyOption
 		return nil, err
 	}
 	key, before, err := t.firstSorted(filter, opts.Sort)
-	if err != nil || before == nil {
+	if err != nil {
 		return nil, err
+	}
+	if before == nil {
+		if opts.Upsert {
+			return t.upsertReturn(filter, u, nil, opts)
+		}
+		return nil, nil
 	}
 	newDoc, modified, err := u.Apply(before, t.c.clk.Now())
 	if err != nil {
@@ -196,8 +274,14 @@ func (t *Txn) FindOneAndReplace(filter, replacement bson.Raw, opts FindModifyOpt
 		return nil, err
 	}
 	key, before, err := t.firstSorted(filter, opts.Sort)
-	if err != nil || before == nil {
+	if err != nil {
 		return nil, err
+	}
+	if before == nil {
+		if opts.Upsert {
+			return t.upsertReturn(filter, nil, replacement, opts)
+		}
+		return nil, nil
 	}
 	newDoc, err := buildReplacement(before, replacement)
 	if err != nil {

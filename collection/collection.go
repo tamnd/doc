@@ -317,6 +317,46 @@ func (c *Collection) DeleteOne(filter bson.Raw) (int64, error) {
 	return n, nil
 }
 
+// DeleteMany deletes every document matching filter, returning the number
+// deleted, in its own transaction.
+func (c *Collection) DeleteMany(filter bson.Raw) (int64, error) {
+	t := c.Begin()
+	n, err := t.DeleteMany(filter)
+	if err != nil {
+		_ = t.Rollback()
+		return 0, err
+	}
+	if err := t.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// InsertMany inserts a batch of documents in one transaction. When some inserts
+// fail, the successful ones are still committed and a *BulkWriteException carrying
+// the partial result is returned (spec 2061 doc 13 §3.3).
+func (c *Collection) InsertMany(docs []bson.Raw, ordered bool) (InsertManyResult, error) {
+	t := c.Begin()
+	res, bwErr := t.InsertMany(docs, ordered)
+	if err := t.Commit(); err != nil {
+		return res, err
+	}
+	return res, bwErr
+}
+
+// BulkWrite executes a mixed batch of write operations in one transaction. When
+// some operations fail, the successful ones are still committed and a
+// *BulkWriteException carrying the partial result is returned (spec 2061 doc 13
+// §14).
+func (c *Collection) BulkWrite(ops []BulkOp, ordered bool) (BulkWriteResult, error) {
+	t := c.Begin()
+	res, bwErr := t.BulkWrite(ops, ordered)
+	if err := t.Commit(); err != nil {
+		return res, err
+	}
+	return res, bwErr
+}
+
 // CountDocuments returns the number of documents matching filter.
 func (c *Collection) CountDocuments(filter bson.Raw) (int64, error) {
 	t := c.BeginReadOnly()
@@ -330,15 +370,32 @@ func (c *Collection) UpdateOne(filter, updateDoc bson.Raw) (UpdateResult, error)
 	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.UpdateOne(filter, updateDoc) })
 }
 
+// UpdateOneWith is UpdateOne with options (notably Upsert) in its own transaction.
+func (c *Collection) UpdateOneWith(filter, updateDoc bson.Raw, opts UpdateOptions) (UpdateResult, error) {
+	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.UpdateOneWith(filter, updateDoc, opts) })
+}
+
 // UpdateMany applies an update-operator document to every matching document in
 // its own transaction.
 func (c *Collection) UpdateMany(filter, updateDoc bson.Raw) (UpdateResult, error) {
 	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.UpdateMany(filter, updateDoc) })
 }
 
+// UpdateManyWith is UpdateMany with options (notably Upsert) in its own
+// transaction.
+func (c *Collection) UpdateManyWith(filter, updateDoc bson.Raw, opts UpdateOptions) (UpdateResult, error) {
+	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.UpdateManyWith(filter, updateDoc, opts) })
+}
+
 // ReplaceOne replaces the first matching document in its own transaction.
 func (c *Collection) ReplaceOne(filter, replacement bson.Raw) (UpdateResult, error) {
 	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.ReplaceOne(filter, replacement) })
+}
+
+// ReplaceOneWith is ReplaceOne with options (notably Upsert) in its own
+// transaction.
+func (c *Collection) ReplaceOneWith(filter, replacement bson.Raw, opts UpdateOptions) (UpdateResult, error) {
+	return c.inWrite(func(t *Txn) (UpdateResult, error) { return t.ReplaceOneWith(filter, replacement, opts) })
 }
 
 // FindOneAndUpdate updates the first matching document and returns the before or
