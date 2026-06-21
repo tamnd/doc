@@ -171,6 +171,28 @@ func (m *MongoTarget) Exec(op oracle.Op) (oracle.Result, error) {
 		}
 		return mongoSingle(c.FindOneAndDelete(ctx, mongoFilter(op.Filter), opts))
 
+	case oracle.OpAggregate:
+		pipeline := make([]any, len(op.Pipeline))
+		for i, stage := range op.Pipeline {
+			pipeline[i] = mongoDoc(stage)
+		}
+		cur, err := c.Aggregate(ctx, pipeline)
+		if err != nil {
+			if code, ok := mongoErrCode(err); ok {
+				return oracle.Result{ErrCode: code}, nil
+			}
+			return oracle.Result{}, err
+		}
+		defer func() { _ = cur.Close(ctx) }()
+		var docs []bson.Raw
+		for cur.Next(ctx) {
+			docs = append(docs, toRaw(cur.Current))
+		}
+		if err := cur.Err(); err != nil {
+			return oracle.Result{}, err
+		}
+		return oracle.Result{Docs: docs}, nil
+
 	case oracle.OpDistinct:
 		res := c.Distinct(ctx, op.Field, mongoFilter(op.Filter))
 		if err := res.Err(); err != nil {

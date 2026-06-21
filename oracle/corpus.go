@@ -247,5 +247,10 @@ func Corpus() []Case {
 	// distinct.
 	cases = append(cases, m3bCases()...)
 
+	// M4 aggregation pipeline: $group and its accumulators, $sort, $sortByCount,
+	// $bucket, $bucketAuto, $facet, $lookup, $graphLookup, $unionWith, $redact,
+	// and the expression language.
+	cases = append(cases, m4Cases()...)
+
 	return cases
 }
