@@ -25,6 +25,10 @@ func mapEngineErr(err error) error {
 		return ErrReadOnly
 	case errors.Is(err, collection.ErrDuplicateKey):
 		return duplicateKeyException(0, err)
+	case errors.Is(err, collection.ErrDocumentValidation):
+		return validationException(err)
+	case errors.Is(err, collection.ErrCappedDelete), errors.Is(err, collection.ErrCappedGrow):
+		return CommandError{Code: codeCappedDelete, Message: err.Error(), Name: "CappedCollection"}
 	default:
 		return err
 	}

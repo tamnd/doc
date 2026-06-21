@@ -108,6 +108,10 @@ type Collection struct {
 	idRootDirty  bool
 	persistExtra func() error
 
+	// pol is the write policy (validator and capped bounds) the engine installs
+	// from the catalog record; the zero value validates nothing and is uncapped.
+	pol Policy
+
 	mu       sync.Mutex
 	byID     map[string]*chain      // overlay key (encoded _id) -> version chain
 	order    []string               // overlay keys in first-insert order, for natural scan

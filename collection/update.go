@@ -352,6 +352,12 @@ func (t *Txn) applyOperatorUpdate(key string, doc bson.Raw, u *update.Update) (b
 	if err := checkIDPreserved(doc, newDoc); err != nil {
 		return false, err
 	}
+	if err := t.checkCappedGrow(doc, newDoc); err != nil {
+		return false, err
+	}
+	if err := t.validateWrite(newDoc, doc, false); err != nil {
+		return false, err
+	}
 	t.bufferReplace(key, newDoc)
 	return true, nil
 }
@@ -365,6 +371,12 @@ func (t *Txn) applyReplace(key string, doc, replacement bson.Raw) (bool, error) 
 	}
 	if bytes.Equal(doc, newDoc) {
 		return false, nil
+	}
+	if err := t.checkCappedGrow(doc, newDoc); err != nil {
+		return false, err
+	}
+	if err := t.validateWrite(newDoc, doc, false); err != nil {
+		return false, err
 	}
 	t.bufferReplace(key, newDoc)
 	return true, nil

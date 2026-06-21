@@ -14,8 +14,10 @@ const (
 	codeNamespaceExists    = 48
 	codeMaxTimeMSExpired   = 50
 	codeWriteConflict      = 112
+	codeDocumentValidation = 121
 	codeNoSuchTransaction  = 251
 	codeDuplicateKey       = 11000
+	codeCappedDelete       = 10101
 	codeInvalidIndexOption = 73
 )
 
@@ -51,6 +53,10 @@ type WriteException struct {
 	WriteConcernError *WriteConcernError
 	WriteErrors       []WriteError
 	Labels            []string
+
+	// cause carries an unexported sentinel so errors.Is can match the typed
+	// exception against, say, ErrDocumentValidation without exposing a field.
+	cause error
 }
 
 func (e WriteException) Error() string {
@@ -76,6 +82,10 @@ func (e WriteException) HasErrorCode(code int) bool {
 	}
 	return false
 }
+
+// Unwrap exposes the underlying sentinel (if any) so callers can match the typed
+// exception with errors.Is against names like ErrDocumentValidation.
+func (e WriteException) Unwrap() error { return e.cause }
 
 // BulkWriteError is one failed operation in a bulkWrite, tying the WriteError to
 // the model that produced it (spec 2061 doc 14 §17.3).
@@ -151,5 +161,19 @@ func duplicateKeyException(index int, err error) WriteException {
 			Code:    codeDuplicateKey,
 			Message: err.Error(),
 		}},
+	}
+}
+
+// validationException wraps a schema-validation failure from the engine as a
+// WriteException with MongoDB's DocumentValidationFailure code 121 (spec 2061 doc 09
+// §10.4). The error also satisfies errors.Is(err, ErrDocumentValidation).
+func validationException(err error) error {
+	return WriteException{
+		WriteErrors: []WriteError{{
+			Index:   0,
+			Code:    codeDocumentValidation,
+			Message: err.Error(),
+		}},
+		cause: ErrDocumentValidation,
 	}
 }

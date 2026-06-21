@@ -28,6 +28,10 @@ type Txn struct {
 	done       bool
 	committedV uint64 // commit version assigned at Commit, 0 until a write commit succeeds
 
+	// bypassValidation suppresses validator enforcement for the writes in this
+	// transaction (MongoDB's bypassDocumentValidation, spec 2061 doc 09 §10.5).
+	bypassValidation bool
+
 	pending      map[string]*pendingOp // overlay key -> buffered write
 	order        []string              // pending keys in write order
 	insertedRIDs map[string]storage.RID
@@ -131,6 +135,9 @@ func (t *Txn) DeleteOne(filter bson.Raw) (int64, error) {
 	if !t.writable {
 		return 0, storage.ErrReadOnly
 	}
+	if t.c.policy().Capped {
+		return 0, ErrCappedDelete
+	}
 	key, doc, err := t.findMatch(filter)
 	if err != nil {
 		return 0, err
@@ -150,6 +157,9 @@ func (t *Txn) DeleteMany(filter bson.Raw) (int64, error) {
 	}
 	if !t.writable {
 		return 0, storage.ErrReadOnly
+	}
+	if t.c.policy().Capped {
+		return 0, ErrCappedDelete
 	}
 	m, err := compileFilter(filter)
 	if err != nil {

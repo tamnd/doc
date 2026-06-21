@@ -46,4 +46,12 @@ var (
 
 	// ErrNamespaceExists reports CreateCollection on a name already in use.
 	ErrNamespaceExists = errors.New("doc: namespace already exists")
+
+	// ErrDocumentValidation reports a write rejected by the collection's schema
+	// validator (MongoDB error code 121, DocumentValidationFailure).
+	ErrDocumentValidation = errors.New("doc: document failed validation")
+
+	// ErrCappedCollection reports a delete or a size-growing update attempted on a
+	// capped collection, which the fixed-size ring forbids.
+	ErrCappedCollection = errors.New("doc: operation not allowed on a capped collection")
 )

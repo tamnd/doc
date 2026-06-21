@@ -29,8 +29,12 @@ func (t *Txn) insertBuffered(d bson.Raw) (bson.Raw, bson.RawValue, error) {
 	if t.currentDoc(key) != nil {
 		return nil, bson.RawValue{}, ErrDuplicateKey
 	}
+	if err := t.validateWrite(out, nil, true); err != nil {
+		return nil, bson.RawValue{}, err
+	}
 	p := t.ensurePending(key)
 	p.insertDoc = out
+	t.enforceCap()
 	return out, idv, nil
 }
 

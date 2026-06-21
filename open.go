@@ -44,6 +44,7 @@ type openConfig struct {
 	encryptionKey []byte
 	busyTimeout   time.Duration
 	readOnly      bool
+	ttlInterval   time.Duration
 }
 
 func defaultOpenConfig() openConfig {
@@ -52,6 +53,7 @@ func defaultOpenConfig() openConfig {
 		cacheSize:   64 << 20,
 		syncLevel:   SyncFull,
 		busyTimeout: time.Second,
+		ttlInterval: 60 * time.Second,
 	}
 }
 
@@ -81,6 +83,11 @@ func WithBusyTimeout(d time.Duration) Option { return func(c *openConfig) { c.bu
 // WithReadOnly opens the file read-only: writes return ErrReadOnly.
 func WithReadOnly(b bool) Option { return func(c *openConfig) { c.readOnly = b } }
 
+// WithTTLInterval sets how often the background TTL sweeper runs (spec 2061 doc 04
+// §11.4). The default is 60 seconds. A non-positive interval disables the background
+// sweeper; expiry can still be driven on demand.
+func WithTTLInterval(d time.Duration) Option { return func(c *openConfig) { c.ttlInterval = d } }
+
 // DB is the open handle to one .doc file. It is safe for concurrent use by many
 // goroutines; share a single DB for the life of the program and derive cheap
 // Database and Collection handles from it (spec 2061 doc 14 §2, §3).
@@ -90,6 +97,9 @@ type DB struct {
 
 	mu     sync.RWMutex
 	closed bool
+
+	ttlStop chan struct{} // closed to stop the background sweeper
+	ttlDone chan struct{} // closed when the sweeper goroutine has returned
 }
 
 // Open opens an existing .doc file or creates a new one. The special path
@@ -136,7 +146,41 @@ func OpenContext(ctx context.Context, path string, opts ...Option) (*DB, error) 
 	if err != nil {
 		return nil, mapEngineErr(err)
 	}
-	return &DB{eng: eng, clock: clock}, nil
+	db := &DB{eng: eng, clock: clock}
+	if !cfg.readOnly && cfg.ttlInterval > 0 {
+		db.startTTLSweeper(cfg.ttlInterval)
+	}
+	return db, nil
+}
+
+// startTTLSweeper launches the background goroutine that runs a TTL expiry pass on
+// each tick until the database closes (spec 2061 doc 04 §11.4).
+func (db *DB) startTTLSweeper(interval time.Duration) {
+	db.ttlStop = make(chan struct{})
+	db.ttlDone = make(chan struct{})
+	go func() {
+		defer close(db.ttlDone)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-db.ttlStop:
+				return
+			case <-t.C:
+				_, _ = db.eng.SweepTTL(db.clock.Now())
+			}
+		}
+	}()
+}
+
+// SweepExpired runs one TTL expiry pass immediately and returns the number of
+// documents deleted. It is the on-demand counterpart to the background sweeper,
+// useful when a caller wants deterministic expiry rather than waiting for a tick.
+func (db *DB) SweepExpired(ctx context.Context) (int, error) {
+	if err := db.check(ctx); err != nil {
+		return 0, err
+	}
+	return db.eng.SweepTTL(db.clock.Now())
 }
 
 // Close flushes dirty pages, checkpoints the WAL, releases the file lock, and
@@ -148,6 +192,10 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closed = true
+	if db.ttlStop != nil {
+		close(db.ttlStop)
+		<-db.ttlDone
+	}
 	return db.eng.Close()
 }
 
