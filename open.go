@@ -143,6 +143,7 @@ type DB struct {
 
 	pragMu     sync.Mutex // guards the session-runtime PRAGMA state below
 	defaultIso isolation  // default isolation for sessions started on this DB
+	autoVacuum string     // auto_vacuum mode: none, incremental, or full
 
 	ttlStop chan struct{} // closed to stop the background sweeper
 	ttlDone chan struct{} // closed when the sweeper goroutine has returned

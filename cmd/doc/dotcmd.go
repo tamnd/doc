@@ -96,11 +96,15 @@ func (a *app) runDot(line string) error {
 		return a.dotCheck(args)
 	case "compact":
 		return a.dotCompact(args)
+	case "checkpoint":
+		return a.dotCheckpoint(args)
+	case "vacuum":
+		return a.dotVacuum(args)
 	case "explain":
 		return a.dotExplain(args)
 	case "backup",
 		"restore", "profile",
-		"reindex", "vacuum", "pager":
+		"reindex", "pager":
 		return a.dotDeferred(cmd)
 	default:
 		return usageErr("unknown dot-command: ." + cmd)

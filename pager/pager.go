@@ -759,6 +759,120 @@ func (p *Pager) Checkpoint() error {
 	return p.checkpointLocked()
 }
 
+// CheckpointThreshold returns the WAL frame count that triggers an automatic
+// checkpoint (the wal_autocheckpoint pragma, spec 2061 doc 18 §15.4).
+func (p *Pager) CheckpointThreshold() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ckptN
+}
+
+// SetCheckpointThreshold sets the automatic-checkpoint frame count. A value of
+// zero or less disables automatic checkpointing; the WAL then grows until an
+// explicit Checkpoint.
+func (p *Pager) SetCheckpointThreshold(frames int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ckptN = frames
+}
+
+// IncrementalVacuum reclaims up to n trailing free pages to the operating system,
+// the engine behind PRAGMA incremental_vacuum(N) (spec 2061 doc 18 §15.2). It
+// checkpoints first so the main file holds all committed data, rebuilds the
+// freelist without the pages that sit at the tail of the file, lowers the page
+// count, makes that durable, and truncates the file. A value of n at or below zero
+// reclaims every trailing free page. It returns the number of pages reclaimed.
+//
+// The sequence is crash-safe: if a crash interrupts it after the commit but before
+// the truncate, recovery restores the lower page count and the trailing pages are
+// simply unused tail that the next vacuum reclaims, never corruption.
+func (p *Pager) IncrementalVacuum(n int) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return 0, ErrClosed
+	}
+	if p.readOnly {
+		return 0, ErrReadOnly
+	}
+	if err := p.checkpointLocked(); err != nil {
+		return 0, err
+	}
+
+	free, err := p.collectFreelistLocked()
+	if err != nil {
+		return 0, err
+	}
+
+	pageCount := uint64(p.hdr.PageCount)
+	newCount := pageCount
+	reclaim := 0
+	for newCount > 1 && free[newCount-1] && (n <= 0 || reclaim < n) {
+		delete(free, newCount-1)
+		newCount--
+		reclaim++
+	}
+	if reclaim == 0 {
+		return 0, nil
+	}
+
+	// Rebuild the freelist chain from the pages that survive, then lower the page
+	// count in the header. Every surviving free page sits below newCount, so the
+	// rewritten chain never points past the new end of file.
+	p.hdr.FreelistRoot = format.NullPage
+	p.hdr.FreelistPageCount = 0
+	for pid := range free {
+		f, ferr := p.fetchLocked(pid)
+		if ferr != nil {
+			return 0, ferr
+		}
+		format.InitPage(f.Buf, format.PageFree, 0)
+		binary.LittleEndian.PutUint32(f.Buf[freelistNextOffset:freelistNextOffset+4], p.hdr.FreelistRoot)
+		p.hdr.FreelistRoot = uint32(pid)
+		p.hdr.FreelistPageCount++
+		p.markDirtyLocked(f)
+		p.Unpin(f)
+	}
+	p.hdr.PageCount = uint32(newCount)
+	p.touchHeaderLocked()
+
+	// Make the rewritten freelist and header durable, fold them into the main
+	// file, then shrink the file to the new page count.
+	if err := p.commitLocked(); err != nil {
+		return 0, err
+	}
+	if err := p.checkpointLocked(); err != nil {
+		return 0, err
+	}
+	for pid := newCount; pid < pageCount; pid++ {
+		p.pool.forget(pid)
+	}
+	if err := p.main.Truncate(int64(newCount) * int64(p.pageSize)); err != nil {
+		return 0, err
+	}
+	if err := p.countSync(p.main, vfs.SyncFull); err != nil {
+		return 0, err
+	}
+	return reclaim, nil
+}
+
+// collectFreelistLocked walks the freelist chain into a set of its page ids.
+func (p *Pager) collectFreelistLocked() (map[uint64]bool, error) {
+	free := make(map[uint64]bool, p.hdr.FreelistPageCount)
+	pid := p.hdr.FreelistRoot
+	for pid != format.NullPage {
+		f, err := p.fetchLocked(uint64(pid))
+		if err != nil {
+			return nil, err
+		}
+		free[uint64(pid)] = true
+		next := binary.LittleEndian.Uint32(f.Buf[freelistNextOffset : freelistNextOffset+4])
+		p.Unpin(f)
+		pid = next
+	}
+	return free, nil
+}
+
 func (p *Pager) checkpointLocked() error {
 	if p.closed {
 		return ErrClosed

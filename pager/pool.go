@@ -179,6 +179,27 @@ func (p *pool) removeGhost(pageID uint64) {
 	}
 }
 
+// forget drops the resident frame for pageID from the page table and whichever 2Q
+// list holds it, and frees its residency slot. Incremental vacuum calls it for the
+// trailing pages it truncates, so the pool holds no frame for a page the file no
+// longer contains. The frame must be clean and unpinned, which the truncated free
+// pages always are after a checkpoint.
+func (p *pool) forget(pageID uint64) {
+	f := p.table[pageID]
+	if f == nil {
+		return
+	}
+	delete(p.table, pageID)
+	switch f.loc {
+	case listA1in:
+		p.a1in.remove(f)
+	case listAm:
+		p.am.remove(f)
+	}
+	f.loc = listNone
+	p.resident--
+}
+
 // forEachResident calls fn for every resident frame. Used by the checkpoint to
 // scan the dirty set.
 func (p *pool) forEachResident(fn func(*Frame)) {
