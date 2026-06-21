@@ -548,5 +548,30 @@ func (t *BTree) Stats() storage.IndexStats {
 			leaf = rs
 		}
 	}
-	return storage.IndexStats{Entries: entries, DistinctKeys: entries, Height: height}
+	return storage.IndexStats{Entries: entries, DistinctKeys: entries, Height: height, Pages: t.countPages(t.root)}
+}
+
+// countPages walks the tree from pno and returns the number of node pages it
+// holds (interior plus leaf), for storage accounting. A NullPage subtree counts
+// as zero. It descends through interior children; the leaf level is the base case.
+func (t *BTree) countPages(pno uint32) uint64 {
+	if pno == format.NullPage {
+		return 0
+	}
+	ty, err := t.pageType(pno)
+	if err != nil {
+		return 0
+	}
+	if ty == format.PageBTreeLeaf {
+		return 1
+	}
+	ents, err := t.loadInterior(pno)
+	if err != nil {
+		return 1
+	}
+	total := uint64(1)
+	for _, e := range ents {
+		total += t.countPages(e.child)
+	}
+	return total
 }

@@ -131,6 +131,7 @@ type IndexStats struct {
 	Entries      uint64 // total entries
 	DistinctKeys uint64 // approximate distinct key count
 	Height       int    // B-tree height
+	Pages        uint64 // B-tree node pages (leaf + interior), for storage accounting
 }
 
 // IndexStore is one B-tree index on a collection (spec 2061 doc 04 §2.3). Keys

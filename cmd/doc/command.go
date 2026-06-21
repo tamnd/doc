@@ -8,10 +8,11 @@ import (
 )
 
 // runCommand executes a raw JSON command document, the form a driver sends over the
-// wire (spec 2061 doc 15 §4.2). The command name is the first key. Until the wire
-// RunCommand dispatcher lands in M6-e, the shell translates the common commands into
-// the same collection methods the mongosh helpers use, which is observably identical
-// for these cases.
+// wire (spec 2061 doc 15 §4.2). The command name is the first key. The read and
+// write data commands route through the same collection helpers the mongosh shortcuts
+// use, which renders identically; everything else (ping, collStats, listIndexes,
+// create, collMod, and the rest) runs through the database RunCommand dispatcher and
+// prints its reply document (spec 2061 doc 14 §13.5).
 func (a *app) runCommand(cmd bson.Raw) error {
 	elems, err := cmd.Elements()
 	if err != nil || len(elems) == 0 {
@@ -26,10 +27,6 @@ func (a *app) runCommand(cmd bson.Raw) error {
 	switch name {
 	case "find":
 		return a.cmdFind(target, cmd)
-	case "count":
-		return a.cmdCount(target, cmd)
-	case "distinct":
-		return a.cmdDistinct(target, cmd)
 	case "aggregate":
 		return a.cmdAggregate(target, cmd)
 	case "insert":
@@ -39,8 +36,15 @@ func (a *app) runCommand(cmd bson.Raw) error {
 	case "update":
 		return a.cmdUpdate(target, cmd)
 	default:
-		return cliError{code: exitQueryError, msg: "command not supported in this build: " + name + " (raw command dispatch arrives with the wire server in M8; use the db." + target + " helper)"}
+		return a.runDBCommand(cmd)
 	}
+}
+
+// runDBCommand runs a command through the database dispatcher and renders the reply
+// document. A CommandError surfaces through classify so a script notices an unknown
+// or malformed command.
+func (a *app) runDBCommand(cmd bson.Raw) error {
+	return a.renderCommand(cmd)
 }
 
 // subDoc pulls a nested document field out of a command, encoding it back to JSON text
@@ -85,28 +89,6 @@ func (a *app) cmdFind(target string, cmd bson.Raw) error {
 		if n, ok := v.AsFloat64(); ok {
 			hc.chain = append(hc.chain, chainCall{name: "limit", arg: strconv.FormatInt(int64(n), 10)})
 		}
-	}
-	return a.runHelper(hc)
-}
-
-func (a *app) cmdCount(target string, cmd bson.Raw) error {
-	hc := helperCall{coll: target, method: "countDocuments"}
-	if q, ok := subDoc(cmd, "query"); ok {
-		hc.args = append(hc.args, q)
-	} else if f, ok := subDoc(cmd, "filter"); ok {
-		hc.args = append(hc.args, f)
-	}
-	return a.runHelper(hc)
-}
-
-func (a *app) cmdDistinct(target string, cmd bson.Raw) error {
-	key, ok := cmd.Lookup("key")
-	if !ok || key.Type != bson.TypeString {
-		return queryError("distinct command needs a key string")
-	}
-	hc := helperCall{coll: target, method: "distinct", args: []string{strconv.Quote(key.StringValue())}}
-	if q, ok := subDoc(cmd, "query"); ok {
-		hc.args = append(hc.args, q)
 	}
 	return a.runHelper(hc)
 }

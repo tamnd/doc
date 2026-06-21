@@ -16,7 +16,10 @@ func (a *app) runSubcommand() int {
 	case "validate":
 		return a.subValidate()
 	case "stats":
-		return reportTop(a.dotDeferred("stats"))
+		if err := a.dotStats(a.cfg.subArgs); err != nil {
+			return reportTop(err)
+		}
+		return exitOK
 	case "schema":
 		if len(a.cfg.subArgs) == 0 {
 			return reportTop(usageErr("doc schema <file> <coll> [n]"))

@@ -78,7 +78,11 @@ func (a *app) runDot(line string) error {
 		return a.dotCommit()
 	case "rollback":
 		return a.dotRollback()
-	case "stats", "dbstats", "import", "export", "dump", "load", "backup",
+	case "stats":
+		return a.dotStats(args)
+	case "dbstats":
+		return a.dotDBStats()
+	case "import", "export", "dump", "load", "backup",
 		"restore", "explain", "profile", "pragma", "validate", "compact",
 		"reindex", "vacuum", "pager":
 		return a.dotDeferred(cmd)
@@ -156,6 +160,32 @@ func (a *app) dotIndexes(args []string) error {
 		}
 	}
 	return nil
+}
+
+// dotStats prints collStats for a named collection, or dbStats for the current
+// database when no collection is given (spec 2061 doc 15 §6). The reply is the same
+// document RunCommand returns to a driver.
+func (a *app) dotStats(args []string) error {
+	if len(args) > 0 {
+		cmd := bson.NewBuilder().AppendString("collStats", args[0]).Build()
+		return a.renderCommand(cmd)
+	}
+	return a.dotDBStats()
+}
+
+// dotDBStats prints dbStats for the current database.
+func (a *app) dotDBStats() error {
+	return a.renderCommand(bson.NewBuilder().AppendInt32("dbStats", 1).Build())
+}
+
+// renderCommand runs cmd through the database dispatcher and prints its reply.
+func (a *app) renderCommand(cmd bson.Raw) error {
+	res := a.db.Database(a.dbName).RunCommand(a.ctx(), cmd)
+	raw, err := res.Raw()
+	if err != nil {
+		return classify(err)
+	}
+	return a.rend.renderDoc(bson.Raw(raw))
 }
 
 // dotSchema infers a flat field-frequency summary from up to n sample documents. It is
