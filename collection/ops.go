@@ -24,6 +24,7 @@ type Txn struct {
 	startVer uint64
 	txnID    uint64
 	writable bool
+	iso      IsolationLevel
 	done     bool
 
 	pending      map[string]*pendingOp // overlay key -> buffered write

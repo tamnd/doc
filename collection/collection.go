@@ -256,6 +256,15 @@ func (c *Collection) BeginReadOnly() *Txn {
 	return &Txn{c: c, startVer: startVer, txnID: txnID, writable: false}
 }
 
+// BeginTx starts a read-write transaction under the given options. It is the
+// session layer's entry point: the isolation level is carried on the transaction so
+// commit chooses snapshot-isolation or serializable validation (spec 2061 doc 06
+// §7.2, §10).
+func (c *Collection) BeginTx(opts TransactionOptions) *Txn {
+	startVer, txnID := c.orc.Acquire()
+	return &Txn{c: c, startVer: startVer, txnID: txnID, writable: true, iso: opts.Isolation}
+}
+
 // InsertOne inserts a single document in its own transaction, returning the stored
 // _id. It is a convenience wrapper over Begin/insert/Commit.
 func (c *Collection) InsertOne(d bson.Raw) (bson.RawValue, error) {
