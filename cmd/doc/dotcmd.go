@@ -82,7 +82,15 @@ func (a *app) runDot(line string) error {
 		return a.dotStats(args)
 	case "dbstats":
 		return a.dotDBStats()
-	case "import", "export", "dump", "load", "backup",
+	case "import":
+		return a.dotImport(args)
+	case "export":
+		return a.dotExport(args)
+	case "dump":
+		return a.dotDump(args)
+	case "load":
+		return a.dotLoad(args)
+	case "backup",
 		"restore", "explain", "profile", "pragma", "validate", "compact",
 		"reindex", "vacuum", "pager":
 		return a.dotDeferred(cmd)
@@ -372,7 +380,7 @@ func (a *app) endSession() {
 func (a *app) dotDeferred(cmd string) error {
 	return cliError{
 		code: exitUsage,
-		msg:  "." + cmd + " is not available in this build yet (it lands with a later milestone: stats/pragma/validate/compact with M6-e, import/export/dump/load with the loaders, backup/restore with M7)",
+		msg:  "." + cmd + " is not available in this build yet (it lands with a later milestone: pragma/validate/compact with M6-e, backup/restore with M7)",
 	}
 }
 

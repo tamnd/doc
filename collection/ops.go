@@ -51,6 +51,12 @@ type pendingOp struct {
 
 func (p *pendingOp) noop() bool { return p.insertDoc == nil && !p.hasRemove }
 
+// SetBypassValidation toggles validator enforcement for the writes buffered in this
+// transaction. The loader sets it from LoadOptions.BypassDocumentValidation so a
+// bulk ingest can skip a validator it knows the source already satisfies (spec 2061
+// doc 14 §19.4).
+func (t *Txn) SetBypassValidation(b bool) { t.bypassValidation = b }
+
 // InsertOne buffers an insert and returns the stored _id. The document is deep
 // validated and normalized (an _id is minted when absent and moved first). A live
 // document with the same _id, committed or buffered in this transaction, is

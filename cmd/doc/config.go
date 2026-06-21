@@ -236,6 +236,12 @@ func parseArgs(args []string) (*config, bool, error) {
 		default:
 			positionals = append(positionals, a)
 			i++
+			// Once a subcommand is identified, hand the rest of the line to it
+			// verbatim so its own --flags are not mistaken for global ones.
+			if rest, ok := subcommandTail(positionals, args, i); ok {
+				c.subArgs = rest
+				i = len(args)
+			}
 		}
 	}
 
@@ -245,20 +251,41 @@ func parseArgs(args []string) (*config, bool, error) {
 		c.pretty = false
 	}
 
-	// Resolve positionals: [file] [subcommand [args...]].
+	// Resolve positionals: [file] [subcommand [args...]]. When the scan above already
+	// peeled the subcommand's own arguments into c.subArgs, only the name resolution
+	// is left here.
+	tailTaken := c.subArgs != nil
 	if len(positionals) > 0 {
 		if isSubcommand(positionals[0]) {
 			c.subcommand = positionals[0]
-			c.subArgs = positionals[1:]
+			if !tailTaken {
+				c.subArgs = positionals[1:]
+			}
 		} else {
 			c.file = positionals[0]
 			if len(positionals) > 1 {
 				c.subcommand = positionals[1]
-				c.subArgs = positionals[2:]
+				if !tailTaken {
+					c.subArgs = positionals[2:]
+				}
 			}
 		}
 	}
 	return c, false, nil
+}
+
+// subcommandTail reports whether the positionals collected so far identify a
+// subcommand whose remaining arguments (everything from args[i:]) should be passed
+// through untouched. It fires the moment the subcommand word is seen, either as the
+// first positional or as the second one following a file path.
+func subcommandTail(positionals, args []string, i int) ([]string, bool) {
+	if len(positionals) == 1 && isSubcommand(positionals[0]) {
+		return append([]string{}, args[i:]...), true
+	}
+	if len(positionals) == 2 && !isSubcommand(positionals[0]) && isSubcommand(positionals[1]) {
+		return append([]string{}, args[i:]...), true
+	}
+	return nil, false
 }
 
 // setMode records an explicit format flag and rejects a second, conflicting one.

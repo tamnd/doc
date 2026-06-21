@@ -28,7 +28,15 @@ func (a *app) runSubcommand() int {
 			return reportTop(err)
 		}
 		return exitOK
-	case "import", "export", "dump", "load", "backup", "restore", "compact", "reindex":
+	case "import":
+		return reportTop(a.dotImport(a.cfg.subArgs))
+	case "export":
+		return reportTop(a.dotExport(a.cfg.subArgs))
+	case "dump":
+		return reportTop(a.dotDump(a.cfg.subArgs))
+	case "load":
+		return reportTop(a.dotLoad(a.cfg.subArgs))
+	case "backup", "restore", "compact", "reindex":
 		return reportTop(a.dotDeferred(a.cfg.subcommand))
 	case "serve":
 		return reportTop(cliError{code: exitUsage, msg: "doc serve arrives with the wire server in M8"})
