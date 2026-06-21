@@ -290,5 +290,12 @@ func (e *Engine) DropDatabase(db string) error {
 // the public layer (spec 2061 doc 14 §sessions).
 func (e *Engine) Oracle() *mvcc.Oracle { return e.orc }
 
+// Begin opens a multi-collection transaction over the shared oracle and pager. The
+// public session layer drives it: every collection touched through the returned
+// MultiTxn reads one snapshot and commits together (spec 2061 doc 14 §14).
+func (e *Engine) Begin(iso collection.IsolationLevel) *collection.MultiTxn {
+	return collection.NewMultiTxn(e.orc, e.pgr, iso)
+}
+
 // Close flushes and closes the shared pager, releasing the whole file.
 func (e *Engine) Close() error { return e.pgr.Close() }

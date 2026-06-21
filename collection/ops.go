@@ -395,6 +395,19 @@ func (t *Txn) conflictKeys() []uint64 {
 // (no per-transaction rollback yet), so a durable apply must be all-or-nothing in
 // practice; on the fault-free conformance path it always completes.
 func (t *Txn) durable(cv uint64) error {
+	if err := t.apply(cv); err != nil {
+		return err
+	}
+	return t.c.pgr.Commit()
+}
+
+// apply writes the transaction's buffered mutations into the heap and indexes
+// stamped with cv, stages any dirty catalog state, but does not drive the pager
+// commit. The single-collection durable path commits the pager immediately after;
+// a multi-collection transaction applies every participant and then commits the
+// shared pager once, so all collections become durable in one group commit (spec
+// 2061 doc 06 §7.5, doc 14 §14).
+func (t *Txn) apply(cv uint64) error {
 	wt := writeTxn{version: cv}
 	t.insertedRIDs = make(map[string]storage.RID)
 	// Pre-check unique secondary indexes against the live committed state before any
@@ -443,7 +456,7 @@ func (t *Txn) durable(cv uint64) error {
 		}
 		t.c.idRootDirty = false
 	}
-	return t.c.pgr.Commit()
+	return nil
 }
 
 // publish installs the transaction's new versions at the head of each overlay
