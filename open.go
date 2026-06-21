@@ -2,6 +2,7 @@ package doc
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -46,6 +47,9 @@ type openConfig struct {
 	busyTimeout   time.Duration
 	readOnly      bool
 	ttlInterval   time.Duration
+	slowOpThresh  time.Duration
+	logger        *slog.Logger
+	profileLevel  int
 }
 
 // engineOptions folds the resolved open config into the engine options. It is
@@ -69,11 +73,12 @@ func (cfg openConfig) engineOptions(clock sys.Clock) engine.Options {
 
 func defaultOpenConfig() openConfig {
 	return openConfig{
-		pageSize:    16384,
-		cacheSize:   64 << 20,
-		syncLevel:   SyncFull,
-		busyTimeout: time.Second,
-		ttlInterval: 60 * time.Second,
+		pageSize:     16384,
+		cacheSize:    64 << 20,
+		syncLevel:    SyncFull,
+		busyTimeout:  time.Second,
+		ttlInterval:  60 * time.Second,
+		slowOpThresh: 100 * time.Millisecond,
 	}
 }
 
@@ -108,6 +113,21 @@ func WithReadOnly(b bool) Option { return func(c *openConfig) { c.readOnly = b }
 // sweeper; expiry can still be driven on demand.
 func WithTTLInterval(d time.Duration) Option { return func(c *openConfig) { c.ttlInterval = d } }
 
+// WithSlowOpThreshold sets the duration above which an operation is counted as
+// slow and, at profiler level 1, logged and recorded to system.profile (spec 2061
+// doc 18 §3). The default is 100 ms. A non-positive value disables slow-op
+// accounting.
+func WithSlowOpThreshold(d time.Duration) Option {
+	return func(c *openConfig) { c.slowOpThresh = d }
+}
+
+// WithProfileLevel sets the initial profiler level (spec 2061 doc 18 §3.4): 0 off,
+// 1 log operations slower than the slow-op threshold, 2 log every operation. The
+// level can be changed at runtime with the profile pragma or the profile command.
+func WithProfileLevel(level int) Option {
+	return func(c *openConfig) { c.profileLevel = level }
+}
+
 // DB is the open handle to one .doc file. It is safe for concurrent use by many
 // goroutines; share a single DB for the life of the program and derive cheap
 // Database and Collection handles from it (spec 2061 doc 14 §2, §3).
@@ -128,6 +148,9 @@ type DB struct {
 	ttlDone chan struct{} // closed when the sweeper goroutine has returned
 
 	feed *changeFeed // in-memory change broadcaster, fed by the engine commit path
+	met  *dbMetrics  // the metric registry, always live (spec 2061 doc 18 §2)
+	log  *slog.Logger
+	prof *profiler // slow-op log and system.profile capture (spec 2061 doc 18 §3)
 }
 
 // Open opens an existing .doc file or creates a new one. The special path
@@ -164,13 +187,20 @@ func OpenContext(ctx context.Context, path string, opts ...Option) (*DB, error) 
 		return nil, mapEngineErr(err)
 	}
 	db := &DB{eng: eng, clock: clock, cfg: cfg, fs: fs, path: path, defaultIso: isoSnapshot}
+	db.log = cfg.logger
+	db.met = newDBMetrics()
+	db.prof = newProfiler(cfg.profileLevel, cfg.slowOpThresh)
 	db.feed = newChangeFeed()
 	eng.SetChangeHook(func(dbName, coll string, recs []collection.ChangeRecord, cv uint64) {
+		for _, r := range recs {
+			db.met.changefeedEvt.With(r.Op).Inc()
+		}
 		db.feed.publish(dbName, coll, recs, cv)
 	})
 	if !cfg.readOnly && cfg.ttlInterval > 0 {
 		db.startTTLSweeper(cfg.ttlInterval)
 	}
+	db.logStartup()
 	return db, nil
 }
 

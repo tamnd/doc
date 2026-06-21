@@ -29,7 +29,8 @@ type pool struct {
 	kin      int // a1in target size; over this, eviction prefers a1in
 	ghostCap int // maximum a1out entries
 
-	resident int // frames currently allocated (<= capacity)
+	resident  int // frames currently allocated (<= capacity)
+	evictions int // victims reclaimed over the pool's life, for the cache metric
 
 	// committedLSN is the highest durably-committed LSN, mirrored from the Pager
 	// before eviction. A dirty frame whose pageLSN exceeds it holds uncommitted
@@ -149,6 +150,7 @@ func (p *pool) evictFrom(fromA1 bool) *Frame {
 		if fromA1 {
 			p.addGhost(v.PageID)
 		}
+		p.evictions++
 		return v
 	}
 	return nil

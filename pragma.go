@@ -100,6 +100,18 @@ var pragmas = map[string]pragmaDesc{
 		scope: "fixed",
 		read:  func(*DB) string { return strconv.Itoa(maxBSONSize) },
 	},
+	"profile": {
+		scope: "runtime",
+		read:  func(db *DB) string { return strconv.Itoa(db.prof.Level()) },
+		write: func(db *DB, v string) error {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n < 0 || n > 2 {
+				return fmt.Errorf("doc: profile wants 0, 1, or 2, got %q", v)
+			}
+			db.prof.SetLevel(n)
+			return nil
+		},
+	},
 }
 
 // maxBSONSize is the largest document doc accepts, matching MongoDB's 16 MiB limit

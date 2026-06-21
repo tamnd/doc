@@ -75,6 +75,8 @@ func (d *Database) RunCommand(ctx context.Context, runCommand any, opts ...*opti
 		return d.cmdGetParameter(cmd)
 	case "setParameter":
 		return d.cmdSetParameter(cmd)
+	case "profile", "setProfilingLevel":
+		return d.cmdProfile(cmd)
 	default:
 		return cmdErr(codeCommandNotFound, "CommandNotFound", "no such command: "+name)
 	}
@@ -100,6 +102,31 @@ func int64Field(cmd bson.Raw, key string) (int64, bool) {
 	return int64(f), ok
 }
 
+// cmdProfile reads or sets the profiler level, the MongoDB profile and
+// setProfilingLevel command (spec 2061 doc 18 §3.4). A level of -1 reads the
+// current level without changing it; 0, 1, or 2 set it. The reply carries the
+// previous level in the "was" field, matching MongoDB.
+func (d *Database) cmdProfile(cmd bson.Raw) *SingleResult {
+	prev := int32(d.db.prof.Level())
+	level, ok := int64Field(cmd, "profile")
+	if !ok {
+		if level, ok = int64Field(cmd, "setProfilingLevel"); !ok {
+			return cmdErr(codeFailedToParse, "FailedToParse", "profile wants a numeric level")
+		}
+	}
+	if level != -1 {
+		if level < 0 || level > 2 {
+			return cmdErr(codeBadValue, "BadValue", "profiling level must be 0, 1, or 2")
+		}
+		d.db.prof.SetLevel(int(level))
+	}
+	b := okBuilder().AppendInt32("was", prev)
+	if ms := d.db.prof.slowThresh.Milliseconds(); ms > 0 {
+		b.AppendInt64("slowms", ms)
+	}
+	return cmdResult(b.Build())
+}
+
 func (d *Database) cmdBuildInfo() bson.Raw {
 	return okBuilder().
 		AppendString("version", Version).
@@ -110,10 +137,49 @@ func (d *Database) cmdBuildInfo() bson.Raw {
 }
 
 func (d *Database) cmdServerStatus() bson.Raw {
+	d.db.refreshMetrics()
+	m, _ := d.db.Metrics(context.Background())
+	if m == nil {
+		m = &MetricsSnapshot{}
+	}
+	// The doc sub-document carries the doc_* metric catalogue in camelCase, so a
+	// MongoDB monitoring tool scraping serverStatus sees the same numbers as the
+	// Prometheus endpoint (spec 2061 doc 18 §2.4).
+	docSub := bson.NewBuilder().
+		AppendInt64("opsTotal", m.OpsTotal).
+		AppendInt64("slowQueryTotal", m.SlowQueryTotal).
+		AppendInt64("pageReads", m.PageReads).
+		AppendInt64("pageWrites", m.PageWrites).
+		AppendInt64("bytesRead", m.BytesRead).
+		AppendInt64("bytesWritten", m.BytesWritten).
+		AppendInt64("cacheHits", m.CacheHits).
+		AppendInt64("cacheMisses", m.CacheMisses).
+		AppendInt64("cacheEvictions", m.CacheEvictions).
+		AppendInt64("walFramesTotal", m.WALFramesTotal).
+		AppendInt64("walSizePages", m.WALSizePages).
+		AppendInt64("checkpointTotal", m.Checkpoints).
+		AppendInt64("fsyncTotal", m.Fsyncs).
+		AppendInt64("fsyncErrorsTotal", m.FsyncErrors).
+		AppendInt64("fileSizeBytes", m.FileSizeBytes).
+		AppendInt64("freelistPages", m.FreelistPages).
+		AppendInt64("collectionCount", m.Collections).
+		AppendInt64("indexCount", m.Indexes).
+		AppendInt64("documentCount", m.DocumentCount).
+		Build()
+	opcounters := bson.NewBuilder().
+		AppendInt64("query", m.OpsTotal).
+		Build()
+	storage := bson.NewBuilder().
+		AppendString("name", "doc").
+		AppendBoolean("persistent", true).
+		Build()
 	return okBuilder().
 		AppendString("host", "").
 		AppendString("version", Version).
 		AppendString("process", "doc").
+		AppendDocument("storageEngine", storage).
+		AppendDocument("opcounters", opcounters).
+		AppendDocument("doc", docSub).
 		Build()
 }
 

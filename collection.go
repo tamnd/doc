@@ -129,6 +129,7 @@ func (c *Collection) InsertOne(ctx context.Context, document any, opts ...*optio
 	if err := c.db.check(ctx); err != nil {
 		return nil, err
 	}
+	defer c.observe("insert")(0, 0, 0)
 	raw, err := toDoc(document)
 	if err != nil {
 		return nil, err
@@ -154,6 +155,7 @@ func (c *Collection) InsertMany(ctx context.Context, documents []any, opts ...*o
 	if len(documents) == 0 {
 		return nil, ErrEmptySlice
 	}
+	defer c.observe("insert")(0, 0, 0)
 	raws := make([]bson.Raw, len(documents))
 	for i, d := range documents {
 		raw, err := toDoc(d)
@@ -220,6 +222,9 @@ func (c *Collection) Find(ctx context.Context, filter any, opts ...*options.Find
 	if err := c.db.check(ctx); err != nil {
 		return nil, err
 	}
+	rec := c.observe("find")
+	var returned int64
+	defer func() { rec(0, returned, 0) }()
 	f, err := toFilter(filter)
 	if err != nil {
 		return nil, err
@@ -236,6 +241,7 @@ func (c *Collection) Find(ctx context.Context, filter any, opts ...*options.Find
 	if err != nil {
 		return nil, mapEngineErr(err)
 	}
+	returned = int64(len(docs))
 	return newCursor(docs), nil
 }
 
@@ -244,6 +250,9 @@ func (c *Collection) FindOne(ctx context.Context, filter any, opts ...*options.F
 	if err := c.db.check(ctx); err != nil {
 		return newSingleResult(nil, err)
 	}
+	rec := c.observe("find")
+	var returned int64
+	defer func() { rec(0, returned, 0) }()
 	f, err := toFilter(filter)
 	if err != nil {
 		return newSingleResult(nil, err)
@@ -282,6 +291,7 @@ func (c *Collection) FindOne(ctx context.Context, filter any, opts ...*options.F
 	if len(docs) == 0 {
 		return newSingleResult(nil, ErrNoDocuments)
 	}
+	returned = 1
 	return newSingleResult(docs[0], nil)
 }
 
@@ -322,6 +332,7 @@ func (c *Collection) update(ctx context.Context, filter, update any, many bool, 
 	if err := c.db.check(ctx); err != nil {
 		return nil, err
 	}
+	defer c.observe("update")(0, 0, 0)
 	f, err := toFilter(filter)
 	if err != nil {
 		return nil, err
@@ -352,6 +363,7 @@ func (c *Collection) ReplaceOne(ctx context.Context, filter, replacement any, op
 	if err := c.db.check(ctx); err != nil {
 		return nil, err
 	}
+	defer c.observe("update")(0, 0, 0)
 	f, err := toFilter(filter)
 	if err != nil {
 		return nil, err
@@ -391,6 +403,7 @@ func (c *Collection) delete(ctx context.Context, filter any, many bool) (*Delete
 	if err := c.db.check(ctx); err != nil {
 		return nil, err
 	}
+	defer c.observe("delete")(0, 0, 0)
 	f, err := toFilter(filter)
 	if err != nil {
 		return nil, err
@@ -416,6 +429,7 @@ func (c *Collection) CountDocuments(ctx context.Context, filter any, opts ...*op
 	if err := c.db.check(ctx); err != nil {
 		return 0, err
 	}
+	defer c.observe("count")(0, 0, 0)
 	f, err := toFilter(filter)
 	if err != nil {
 		return 0, err
@@ -433,6 +447,7 @@ func (c *Collection) EstimatedDocumentCount(ctx context.Context, opts ...*option
 	if err := c.db.check(ctx); err != nil {
 		return 0, err
 	}
+	defer c.observe("count")(0, 0, 0)
 	col := c.readExec(ctx)
 	if col == nil {
 		return 0, nil
@@ -446,6 +461,7 @@ func (c *Collection) Distinct(ctx context.Context, fieldName string, filter any,
 	if err := c.db.check(ctx); err != nil {
 		return nil, err
 	}
+	defer c.observe("distinct")(0, 0, 0)
 	f, err := toFilter(filter)
 	if err != nil {
 		return nil, err
@@ -470,6 +486,9 @@ func (c *Collection) Aggregate(ctx context.Context, pipeline any, opts ...*optio
 	if err := c.db.check(ctx); err != nil {
 		return nil, err
 	}
+	rec := c.observe("aggregate")
+	var returned int64
+	defer func() { rec(0, returned, 0) }()
 	stages, err := marshalPipeline(pipeline)
 	if err != nil {
 		return nil, err
@@ -482,6 +501,7 @@ func (c *Collection) Aggregate(ctx context.Context, pipeline any, opts ...*optio
 	if err != nil {
 		return nil, mapEngineErr(err)
 	}
+	returned = int64(len(docs))
 	return newCursor(docs), nil
 }
 
@@ -491,6 +511,7 @@ func (c *Collection) Drop(ctx context.Context) error {
 	if err := c.db.check(ctx); err != nil {
 		return err
 	}
+	defer c.observe("drop")(0, 0, 0)
 	err := mapEngineErr(c.db.eng.DropCollection(c.dbName, c.name))
 	if errors.Is(err, ErrNamespaceNotFound) {
 		return nil
@@ -543,6 +564,7 @@ func (c *Collection) FindOneAndUpdate(ctx context.Context, filter, update any, o
 	if err := c.db.check(ctx); err != nil {
 		return newSingleResult(nil, err)
 	}
+	defer c.observe("findAndModify")(0, 0, 0)
 	f, err := toFilter(filter)
 	if err != nil {
 		return newSingleResult(nil, err)
@@ -581,6 +603,7 @@ func (c *Collection) FindOneAndReplace(ctx context.Context, filter, replacement 
 	if err := c.db.check(ctx); err != nil {
 		return newSingleResult(nil, err)
 	}
+	defer c.observe("findAndModify")(0, 0, 0)
 	f, err := toFilter(filter)
 	if err != nil {
 		return newSingleResult(nil, err)
@@ -619,6 +642,7 @@ func (c *Collection) FindOneAndDelete(ctx context.Context, filter any, opts ...*
 	if err := c.db.check(ctx); err != nil {
 		return newSingleResult(nil, err)
 	}
+	defer c.observe("findAndModify")(0, 0, 0)
 	f, err := toFilter(filter)
 	if err != nil {
 		return newSingleResult(nil, err)
