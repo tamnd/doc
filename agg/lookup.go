@@ -310,12 +310,12 @@ func (s *unionWithStage) open(in src, ec *execCtx) src {
 }
 
 type unionWithSrc struct {
-	in       src
-	stage    *unionWithStage
-	ec       *execCtx
+	in        src
+	stage     *unionWithStage
+	ec        *execCtx
 	drainedIn bool
-	foreign  []bson.Raw
-	fi       int
+	foreign   []bson.Raw
+	fi        int
 }
 
 func (s *unionWithSrc) next() (bson.Raw, error) {
