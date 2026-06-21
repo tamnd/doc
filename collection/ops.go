@@ -20,12 +20,13 @@ var ErrTxnDone = errors.New("collection: transaction already finished")
 // transaction that committed since the snapshot aborts Commit with a retriable
 // error (spec 2061 doc 06 §7, §8).
 type Txn struct {
-	c        *Collection
-	startVer uint64
-	txnID    uint64
-	writable bool
-	iso      IsolationLevel
-	done     bool
+	c          *Collection
+	startVer   uint64
+	txnID      uint64
+	writable   bool
+	iso        IsolationLevel
+	done       bool
+	committedV uint64 // commit version assigned at Commit, 0 until a write commit succeeds
 
 	pending      map[string]*pendingOp // overlay key -> buffered write
 	order        []string              // pending keys in write order
@@ -203,16 +204,31 @@ func (t *Txn) Commit() error {
 		t.c.gc()
 		return nil
 	}
-	var err error
+	var (
+		cv  uint64
+		err error
+	)
 	if t.iso == Serializable {
-		_, err = t.c.orc.CommitSerializable(t.startVer, t.txnID, t.conflictKeys(), t.durable, t.publish)
+		cv, err = t.c.orc.CommitSerializable(t.startVer, t.txnID, t.conflictKeys(), t.durable, t.publish)
 	} else {
-		_, err = t.c.orc.Commit(t.startVer, t.conflictKeys(), t.durable, t.publish)
+		cv, err = t.c.orc.Commit(t.startVer, t.conflictKeys(), t.durable, t.publish)
+	}
+	if err == nil {
+		t.committedV = cv
 	}
 	t.done = true
 	t.c.gc()
 	return err
 }
+
+// SnapshotVersion is the commit version the transaction reads from: writes committed
+// at or before it are visible, later ones are not. It is a test and observability hook
+// onto the MVCC snapshot, used by the linearizability checker (spec 2061 doc 19 §19.2).
+func (t *Txn) SnapshotVersion() uint64 { return t.startVer }
+
+// CommitVersion is the version a successful write commit was assigned, or 0 for a
+// read-only transaction, one with no effective writes, or one that has not committed.
+func (t *Txn) CommitVersion() uint64 { return t.committedV }
 
 // Rollback discards the transaction's buffered writes and releases its snapshot.
 // Abort is free: nothing durable was written before commit, so there is nothing to
