@@ -98,6 +98,16 @@ type Collection struct {
 	sidx         map[string]*index.BTree // secondary index name -> live B-tree
 	catalogDirty bool                    // a secondary index root changed this commit
 
+	// secondaryBase is the first page-ownership collID handed to a secondary
+	// index B-tree; it defaults to secondaryCollIDBase for the single-collection
+	// path and is set per collection by the multi-collection engine.
+	secondaryBase uint32
+	// idRootDirty is set when the _id index root changed this commit, so the
+	// engine path can persist the new root into the master catalog. persistExtra,
+	// when set, stages that external catalog write into the same pager commit.
+	idRootDirty  bool
+	persistExtra func() error
+
 	mu       sync.Mutex
 	byID     map[string]*chain      // overlay key (encoded _id) -> version chain
 	order    []string               // overlay keys in first-insert order, for natural scan
@@ -145,16 +155,17 @@ func newCollection(pgr *pager.Pager, opts Options) (*Collection, error) {
 		return nil, err
 	}
 	c := &Collection{
-		pgr:      pgr,
-		hp:       hp,
-		idx:      idx,
-		gen:      gen,
-		clk:      clock,
-		cat:      cat,
-		sidx:     make(map[string]*index.BTree),
-		byID:     make(map[string]*chain),
-		dirty:    make(map[string]struct{}),
-		ridOwner: make(map[storage.RID]string),
+		pgr:           pgr,
+		hp:            hp,
+		idx:           idx,
+		gen:           gen,
+		clk:           clock,
+		cat:           cat,
+		secondaryBase: secondaryCollIDBase,
+		sidx:          make(map[string]*index.BTree),
+		byID:          make(map[string]*chain),
+		dirty:         make(map[string]struct{}),
+		ridOwner:      make(map[storage.RID]string),
 	}
 	if err := c.openSecondaryIndexes(); err != nil {
 		return nil, err
@@ -167,13 +178,101 @@ func newCollection(pgr *pager.Pager, opts Options) (*Collection, error) {
 	return c, nil
 }
 
+// Deps carries the shared resources a collection binds to when the multi-collection
+// engine multiplexes many collections in one file (spec 2061 doc 09 §2). The engine
+// owns the pager and a single oracle shared across every collection, assigns each
+// collection a distinct heap collID block, and persists the collection's _id index
+// root and secondary-index catalog through the master catalog rather than the file
+// header. The single-collection Open path keeps its own pager, oracle, and header
+// catalog-root slot and does not use this.
+type Deps struct {
+	Pager *pager.Pager
+	Clock sys.Clock
+	IDGen sys.IDGenerator
+	// HeapCollID tags this collection's document heap and _id index pages.
+	HeapCollID uint32
+	// SecondaryCatalogCollID is the heap id of this collection's secondary-index
+	// registry; SecondaryIndexBase is the first id handed to a secondary B-tree.
+	SecondaryCatalogCollID uint32
+	SecondaryIndexBase     uint32
+	// IDIndexRoot is the persisted _id index root, NullPage when none yet.
+	IDIndexRoot uint32
+	// OnIDIndexRoot records a changed _id index root onto the catalog record;
+	// PersistCatalog stages that record into the pager commit at durable time.
+	OnIDIndexRoot  func(uint32)
+	PersistCatalog func() error
+}
+
+// NewWithDeps opens a collection bound to the engine's shared resources, returning
+// the highest commit version recovered from its heap so the engine can seed the
+// one shared oracle at the global maximum (spec 2061 doc 06 §4.6). The oracle is
+// not set here; the engine calls SetOracle once it has opened every collection.
+func NewWithDeps(d Deps) (*Collection, uint64, error) {
+	hp, err := heap.Open(d.Pager, d.HeapCollID)
+	if err != nil {
+		return nil, 0, err
+	}
+	clock := d.Clock
+	if clock == nil {
+		clock = sys.SystemClock{}
+	}
+	gen := d.IDGen
+	if gen == nil {
+		gen = sys.NewObjectIDGenerator(clock)
+	}
+	cat, err := catalog.OpenStoreWithCollID(d.Pager, d.SecondaryCatalogCollID)
+	if err != nil {
+		return nil, 0, err
+	}
+	c := &Collection{
+		pgr:           d.Pager,
+		hp:            hp,
+		gen:           gen,
+		clk:           clock,
+		cat:           cat,
+		secondaryBase: d.SecondaryIndexBase,
+		persistExtra:  d.PersistCatalog,
+		sidx:          make(map[string]*index.BTree),
+		byID:          make(map[string]*chain),
+		dirty:         make(map[string]struct{}),
+		ridOwner:      make(map[storage.RID]string),
+	}
+	onRoot := func(root uint32) {
+		if d.OnIDIndexRoot != nil {
+			d.OnIDIndexRoot(root)
+		}
+		c.idRootDirty = true
+	}
+	idx, err := index.OpenWithRoot(d.Pager, d.HeapCollID, true, d.IDIndexRoot, onRoot)
+	if err != nil {
+		return nil, 0, err
+	}
+	c.idx = idx
+	if err := c.openSecondaryIndexes(); err != nil {
+		return nil, 0, err
+	}
+	maxVer, err := c.rebuild()
+	if err != nil {
+		return nil, 0, err
+	}
+	return c, maxVer, nil
+}
+
+// SetOracle binds the collection to the engine's shared MVCC oracle. It must be
+// called before any transaction begins on a collection opened with NewWithDeps.
+func (c *Collection) SetOracle(o *mvcc.Oracle) { c.orc = o }
+
+// CloseShared releases the collection's per-collection state without closing the
+// shared pager, which the engine owns and closes once for the whole file.
+func (c *Collection) CloseShared() {}
+
 // openSecondaryIndexes opens a live B-tree for each spec the catalog recovered,
 // rooted at the spec's persisted root page. The onRoot hook records a later root
 // change (a first insert or a root split) back onto the spec so it is persisted on
 // the next catalog stage.
 func (c *Collection) openSecondaryIndexes() error {
 	for i, sp := range c.cat.Specs() {
-		bt, err := c.openIndexTree(secondaryCollIDBase+uint32(i), sp)
+		bt, err := c.openIndexTree(c.secondaryBase+uint32(i), sp)
 		if err != nil {
 			return err
 		}

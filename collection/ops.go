@@ -437,6 +437,12 @@ func (t *Txn) durable(cv uint64) error {
 		}
 		t.c.catalogDirty = false
 	}
+	if t.c.idRootDirty && t.c.persistExtra != nil {
+		if err := t.c.persistExtra(); err != nil {
+			return err
+		}
+		t.c.idRootDirty = false
+	}
 	return t.c.pgr.Commit()
 }
 

@@ -53,7 +53,7 @@ func (c *Collection) CreateIndex(m IndexModel) (string, error) {
 	if err := c.cat.Add(sp); err != nil {
 		return "", err
 	}
-	treeCollID := secondaryCollIDBase + uint32(len(c.cat.Specs())-1)
+	treeCollID := c.secondaryBase + uint32(len(c.cat.Specs())-1)
 	bt, err := c.openIndexTree(treeCollID, sp)
 	if err != nil {
 		_, _ = c.cat.Remove(sp.Name)
