@@ -71,6 +71,12 @@ func (e varExpr) eval(c *evalCtx) bson.RawValue {
 		base = mkDate(c.now)
 	case "REMOVE":
 		return missing
+	case "KEEP":
+		return redactKeep
+	case "PRUNE":
+		return redactPrune
+	case "DESCEND":
+		return redactDescend
 	default:
 		v, ok := c.vars[e.name]
 		if !ok {

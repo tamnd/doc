@@ -20,9 +20,52 @@ type src interface {
 }
 
 // stageSpec is one compiled pipeline stage. open wraps an upstream source into the
-// stage's own source, binding the runtime now for $$NOW.
+// stage's own source, binding the per-run execution context.
 type stageSpec interface {
-	open(in src, now int64) src
+	open(in src, ec *execCtx) src
+}
+
+// execCtx carries per-run state every stage shares: the $$NOW timestamp, any
+// outer let-variables (set by a $lookup sub-pipeline), and the environment that
+// cross-collection stages ($lookup, $unionWith, $out, $merge, $graphLookup) use to
+// reach other collections (spec 2061 doc 12 §11, §15, §16).
+type execCtx struct {
+	now  int64
+	env  *Env
+	vars map[string]bson.RawValue
+}
+
+// withVars returns a copy of the context with additional let-variables bound, used
+// when running a $lookup sub-pipeline correlated to the outer document.
+func (ec *execCtx) withVars(vars map[string]bson.RawValue) *execCtx {
+	return &execCtx{now: ec.now, env: ec.env, vars: vars}
+}
+
+// Env gives the aggregation engine access to other collections. The caller (the
+// collection package) supplies it; cross-collection stages error when it is nil.
+type Env struct {
+	// Read returns every document of the named collection in natural order.
+	Read func(coll string) ([]bson.Raw, error)
+	// Write applies a $out or $merge result to a target collection.
+	Write func(req WriteRequest) error
+}
+
+// WriteRequest describes a $out or $merge write to a target collection.
+type WriteRequest struct {
+	// Coll is the target collection name.
+	Coll string
+	// Docs is the pipeline output to write.
+	Docs []bson.Raw
+	// Replace is set for $out: drop the target and replace it with Docs.
+	Replace bool
+	// On is the set of fields that identify a matching target document ($merge).
+	On []string
+	// WhenMatched is the $merge action for an existing match: replace,
+	// keepExisting, merge, or fail.
+	WhenMatched string
+	// WhenNotMatched is the $merge action when no match exists: insert, discard,
+	// or fail.
+	WhenNotMatched string
 }
 
 // Pipeline is a compiled aggregation pipeline.
@@ -33,7 +76,7 @@ type Pipeline struct {
 // Compile compiles a pipeline (an array of single-key stage documents) into a
 // Pipeline (spec 2061 doc 12 §2).
 func Compile(stages []bson.Raw) (*Pipeline, error) {
-	p := &Pipeline{}
+	// Validate stage shape before the optimizer rewrites the pipeline.
 	for _, s := range stages {
 		elems, err := s.Elements()
 		if err != nil {
@@ -42,21 +85,34 @@ func Compile(stages []bson.Raw) (*Pipeline, error) {
 		if len(elems) != 1 {
 			return nil, ErrBadStage
 		}
+	}
+	stages = optimizeRaw(stages)
+	p := &Pipeline{}
+	for _, s := range stages {
+		elems, _ := s.Elements()
 		spec, cerr := compileStage(elems[0].Key, elems[0].Value)
 		if cerr != nil {
 			return nil, cerr
 		}
 		p.stages = append(p.stages, spec)
 	}
+	fuseTopK(p)
 	return p, nil
 }
 
 // Run executes the pipeline over input documents, returning the result documents.
-// now is the epoch-millisecond value bound to $$NOW.
+// now is the epoch-millisecond value bound to $$NOW. Cross-collection stages are
+// unavailable; use RunWith to supply an environment.
 func (p *Pipeline) Run(input []bson.Raw, now int64) ([]bson.Raw, error) {
+	return p.RunWith(input, now, nil)
+}
+
+// RunWith executes the pipeline with an environment for cross-collection stages.
+func (p *Pipeline) RunWith(input []bson.Raw, now int64, env *Env) ([]bson.Raw, error) {
+	ec := &execCtx{now: now, env: env}
 	var s src = &sliceSrc{docs: input}
 	for _, st := range p.stages {
-		s = st.open(s, now)
+		s = st.open(s, ec)
 	}
 	var out []bson.Raw
 	for {
@@ -69,6 +125,31 @@ func (p *Pipeline) Run(input []bson.Raw, now int64) ([]bson.Raw, error) {
 		}
 		out = append(out, doc)
 	}
+}
+
+// multiStage chains several compiled stages into one, used to desugar a stage that
+// is defined in terms of others (such as $sortByCount = $group + $sort).
+type multiStage struct {
+	stages []stageSpec
+}
+
+func (m *multiStage) open(in src, ec *execCtx) src {
+	s := in
+	for _, st := range m.stages {
+		s = st.open(s, ec)
+	}
+	return s
+}
+
+// runInner executes the pipeline over input using an existing execution context
+// (carrying the environment and any let-variables), returning all output documents.
+// It backs $lookup and $unionWith sub-pipelines.
+func (p *Pipeline) runInner(input []bson.Raw, ec *execCtx) ([]bson.Raw, error) {
+	var s src = &sliceSrc{docs: input}
+	for _, st := range p.stages {
+		s = st.open(s, ec)
+	}
+	return drain(s)
 }
 
 // sliceSrc serves documents from a slice.
@@ -87,9 +168,13 @@ func (s *sliceSrc) next() (bson.Raw, error) {
 }
 
 // docCtx builds the evaluation context for a document: $$ROOT and $$CURRENT both
-// start at the whole document.
-func docCtx(doc bson.Raw, now int64) *evalCtx {
-	return &evalCtx{root: doc, cur: mkDoc(doc), now: now, vars: map[string]bson.RawValue{}}
+// start at the whole document, and any outer let-variables from ec are seeded.
+func docCtx(doc bson.Raw, ec *execCtx) *evalCtx {
+	vars := ec.vars
+	if vars == nil {
+		vars = map[string]bson.RawValue{}
+	}
+	return &evalCtx{root: doc, cur: mkDoc(doc), now: ec.now, vars: vars}
 }
 
 // compileStage dispatches one stage by name.
@@ -115,6 +200,32 @@ func compileStage(name string, arg bson.RawValue) (stageSpec, error) {
 		return compileCount(arg)
 	case "$unwind":
 		return compileUnwind(arg)
+	case "$group":
+		return compileGroup(arg)
+	case "$sort":
+		return compileSort(arg)
+	case "$sortByCount":
+		return compileSortByCount(arg)
+	case "$sample":
+		return compileSample(arg)
+	case "$bucket":
+		return compileBucket(arg)
+	case "$bucketAuto":
+		return compileBucketAuto(arg)
+	case "$facet":
+		return compileFacet(arg)
+	case "$lookup":
+		return compileLookup(arg)
+	case "$graphLookup":
+		return compileGraphLookup(arg)
+	case "$unionWith":
+		return compileUnionWith(arg)
+	case "$redact":
+		return compileRedact(arg)
+	case "$out":
+		return compileOut(arg)
+	case "$merge":
+		return compileMerge(arg)
 	default:
 		return nil, ErrBadStage
 	}
@@ -161,13 +272,13 @@ type matchStage struct {
 	expr    Expr
 }
 
-func (s *matchStage) open(in src, now int64) src {
-	return &matchSrc{in: in, now: now, spec: s}
+func (s *matchStage) open(in src, ec *execCtx) src {
+	return &matchSrc{in: in, ec: ec, spec: s}
 }
 
 type matchSrc struct {
 	in   src
-	now  int64
+	ec   *execCtx
 	spec *matchStage
 }
 
@@ -180,7 +291,7 @@ func (s *matchSrc) next() (bson.Raw, error) {
 		if s.spec.matcher != nil && !s.spec.matcher.Match(doc) {
 			continue
 		}
-		if s.spec.expr != nil && !truthy(s.spec.expr.eval(docCtx(doc, s.now))) {
+		if s.spec.expr != nil && !truthy(s.spec.expr.eval(docCtx(doc, s.ec))) {
 			continue
 		}
 		return doc, nil
@@ -228,13 +339,13 @@ type addFieldsStage struct {
 	fields []fieldExpr
 }
 
-func (s *addFieldsStage) open(in src, now int64) src {
-	return &addFieldsSrc{in: in, now: now, stage: s}
+func (s *addFieldsStage) open(in src, ec *execCtx) src {
+	return &addFieldsSrc{in: in, ec: ec, stage: s}
 }
 
 type addFieldsSrc struct {
 	in    src
-	now   int64
+	ec    *execCtx
 	stage *addFieldsStage
 }
 
@@ -243,7 +354,7 @@ func (s *addFieldsSrc) next() (bson.Raw, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx := docCtx(doc, s.now)
+	ctx := docCtx(doc, s.ec)
 	for _, f := range s.stage.fields {
 		doc = docWith(doc, f.path, f.expr.eval(ctx))
 	}
@@ -279,7 +390,7 @@ type unsetStage struct {
 	paths [][]string
 }
 
-func (s *unsetStage) open(in src, now int64) src {
+func (s *unsetStage) open(in src, _ *execCtx) src {
 	return &unsetSrc{in: in, stage: s}
 }
 
@@ -326,13 +437,13 @@ type replaceRootStage struct {
 	expr Expr
 }
 
-func (s *replaceRootStage) open(in src, now int64) src {
-	return &replaceRootSrc{in: in, now: now, stage: s}
+func (s *replaceRootStage) open(in src, ec *execCtx) src {
+	return &replaceRootSrc{in: in, ec: ec, stage: s}
 }
 
 type replaceRootSrc struct {
 	in    src
-	now   int64
+	ec    *execCtx
 	stage *replaceRootStage
 }
 
@@ -341,7 +452,7 @@ func (s *replaceRootSrc) next() (bson.Raw, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := s.stage.expr.eval(docCtx(doc, s.now))
+	v := s.stage.expr.eval(docCtx(doc, s.ec))
 	if v.Type != bson.TypeDocument {
 		return nil, ErrBadStage
 	}
@@ -360,7 +471,7 @@ func compileLimit(arg bson.RawValue) (stageSpec, error) {
 
 type limitStage struct{ n int }
 
-func (s *limitStage) open(in src, now int64) src {
+func (s *limitStage) open(in src, _ *execCtx) src {
 	return &limitSrc{in: in, remaining: s.n}
 }
 
@@ -391,7 +502,7 @@ func compileSkip(arg bson.RawValue) (stageSpec, error) {
 
 type skipStage struct{ n int }
 
-func (s *skipStage) open(in src, now int64) src {
+func (s *skipStage) open(in src, _ *execCtx) src {
 	return &skipSrc{in: in, remaining: s.n}
 }
 
@@ -422,7 +533,7 @@ func compileCount(arg bson.RawValue) (stageSpec, error) {
 
 type countStage struct{ field string }
 
-func (s *countStage) open(in src, now int64) src {
+func (s *countStage) open(in src, _ *execCtx) src {
 	return &countSrc{in: in, field: s.field}
 }
 
@@ -505,7 +616,7 @@ type unwindStage struct {
 	preserve   bool
 }
 
-func (s *unwindStage) open(in src, now int64) src {
+func (s *unwindStage) open(in src, _ *execCtx) src {
 	return &unwindSrc{in: in, stage: s}
 }
 

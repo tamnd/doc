@@ -28,7 +28,7 @@ func evalC(t *testing.T, expr bson.RawValue, root bson.Raw) bson.RawValue {
 	if err != nil {
 		t.Fatalf("compileExpr: %v", err)
 	}
-	return e.eval(docCtx(root, 0))
+	return e.eval(docCtx(root, &execCtx{}))
 }
 
 // evalK evaluates against an empty document.

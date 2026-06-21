@@ -167,13 +167,13 @@ type projectStage struct {
 	inclusion bool
 }
 
-func (s *projectStage) open(in src, now int64) src {
-	return &projectSrc{in: in, now: now, stage: s}
+func (s *projectStage) open(in src, ec *execCtx) src {
+	return &projectSrc{in: in, ec: ec, stage: s}
 }
 
 type projectSrc struct {
 	in    src
-	now   int64
+	ec    *execCtx
 	stage *projectStage
 }
 
@@ -182,7 +182,7 @@ func (s *projectSrc) next() (bson.Raw, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx := docCtx(doc, s.now)
+	ctx := docCtx(doc, s.ec)
 	if s.stage.inclusion {
 		return projectInclude(s.stage.root, doc, ctx, true), nil
 	}
