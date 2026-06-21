@@ -24,11 +24,12 @@ const dotHelpText = `Dot-commands (meta-operations):
   .export <file> --collection <c> [--filter <f>] [--fields a,b] [--format ...]
   .dump [dir] [--db <name>] [--collection <c>] [--skip-indexes]
   .load <dir> [--db <name>] [--drop] [--no-indexes]
+  .pragma [name[=value]]      read or write an engine setting, or list all
   .begin              begin an explicit transaction
   .commit             commit the current transaction
   .rollback           roll back the current transaction
   .quit               close and exit
-Some commands (.pragma, .backup, .compact) arrive with a later milestone and
+Some commands (.backup, .compact) arrive with a later milestone and
 report so when called.
 Type .help <cmd> for detail on any command.`
 
@@ -44,4 +45,5 @@ var dotHelpDetail = map[string]string{
 	"export":      ".export <file> --collection <c> [--filter <json>] [--fields a,b] [--sort <json>] [--skip n] [--limit n] [--format json|jsonl|csv|bson] - write a query result to a file; - writes stdout",
 	"dump":        ".dump [dir] [--db <name>] [--collection <c>] [--skip-indexes] - write each collection as a bson stream plus an index sidecar under dir/<db>; - streams jsonl to stdout",
 	"load":        ".load <dir> [--db <name>] [--drop] [--no-indexes] - read a dump directory back, recreating indexes from the sidecars",
+	"pragma":      ".pragma [name[=value]] - with no argument list every engine setting; with a name read it; with name=value write it. Writable: synchronous, default_isolation",
 }

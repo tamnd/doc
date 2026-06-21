@@ -333,6 +333,25 @@ func (p *Pager) PageSize() int { return p.pageSize }
 // pages they format before handing them back for write-back.
 func (p *Pager) Checksum() format.ChecksumAlgo { return p.checksum }
 
+// SyncLevel returns the current commit durability level. It is read under the
+// same lock Commit takes so a concurrent SetSync is observed atomically.
+func (p *Pager) SyncLevel() SyncLevel {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sync
+}
+
+// SetSync changes the commit durability level at runtime. It is the engine seam
+// behind the synchronous PRAGMA (spec 2061 doc 05 §10). A read-only pager ignores
+// the change since it never commits.
+func (p *Pager) SetSync(l SyncLevel) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.readOnly {
+		p.sync = l
+	}
+}
+
 // CatalogRoot returns the root page of the catalog/_id-index B-tree, or
 // format.NullPage when none exists yet. In M1 (single collection, single index)
 // this header slot holds the _id index root directly; the catalog that will

@@ -71,6 +71,10 @@ func (d *Database) RunCommand(ctx context.Context, runCommand any, opts ...*opti
 		return d.cmdCount(ctx, target, cmd)
 	case "distinct":
 		return d.cmdDistinct(ctx, target, cmd)
+	case "getParameter":
+		return d.cmdGetParameter(cmd)
+	case "setParameter":
+		return d.cmdSetParameter(cmd)
 	default:
 		return cmdErr(codeCommandNotFound, "CommandNotFound", "no such command: "+name)
 	}
@@ -417,6 +421,82 @@ func (d *Database) cmdDistinct(ctx context.Context, target string, cmd bson.Raw)
 		rvs = append(rvs, bson.RawValue{Type: ty, Data: data})
 	}
 	return cmdResult(okBuilder().AppendArray("values", bson.BuildArray(rvs...)).Build())
+}
+
+// cmdGetParameter reads engine PRAGMAs through the command surface (spec 2061 doc 19
+// §20). It mirrors MongoDB's getParameter: {getParameter: 1, <name>: 1} returns the
+// named parameters, while {getParameter: "*"} returns every catalogued one. Each
+// requested name maps onto DB.Pragma; an unknown name is reported rather than
+// silently dropped so a caller can tell a typo from a real value.
+func (d *Database) cmdGetParameter(cmd bson.Raw) *SingleResult {
+	elems, _ := cmd.Elements()
+	all := len(elems) > 0 && elems[0].Value.Type == bson.TypeString && elems[0].Value.StringValue() == "*"
+	var names []string
+	if all {
+		names = PragmaNames()
+	} else {
+		for _, e := range elems[1:] {
+			if e.Key == "*" {
+				names = PragmaNames()
+				break
+			}
+			names = append(names, e.Key)
+		}
+	}
+	if len(names) == 0 {
+		return cmdErr(codeFailedToParse, "FailedToParse", "getParameter needs at least one parameter name")
+	}
+	b := okBuilder()
+	for _, n := range names {
+		val, err := d.db.Pragma(n, "")
+		if err != nil {
+			return cmdErr(codeFailedToParse, "FailedToParse", err.Error())
+		}
+		b.AppendString(n, val)
+	}
+	return cmdResult(b.Build())
+}
+
+// cmdSetParameter writes engine PRAGMAs through the command surface (spec 2061 doc 19
+// §20). It mirrors MongoDB's setParameter: every field after the command name is a
+// parameter to set, and the reply carries each prior value under its name. A field
+// that names a read-only or unknown PRAGMA fails the whole command, so a partial
+// apply never goes unreported.
+func (d *Database) cmdSetParameter(cmd bson.Raw) *SingleResult {
+	elems, _ := cmd.Elements()
+	if len(elems) < 2 {
+		return cmdErr(codeFailedToParse, "FailedToParse", "setParameter needs at least one parameter to set")
+	}
+	b := okBuilder()
+	for _, e := range elems[1:] {
+		prev, err := d.db.Pragma(e.Key, "")
+		if err != nil {
+			return cmdErr(codeFailedToParse, "FailedToParse", err.Error())
+		}
+		if _, err := d.db.Pragma(e.Key, rawValueToString(e.Value)); err != nil {
+			return cmdErr(codeFailedToParse, "FailedToParse", err.Error())
+		}
+		b.AppendString(e.Key, prev)
+	}
+	return cmdResult(b.Build())
+}
+
+// rawValueToString renders a command argument as the string DB.Pragma consumes. The
+// PRAGMA values are short scalars (an enum word, a number, a bool), so a string,
+// number, or boolean argument all collapse to their textual form; anything else is
+// passed through empty and rejected by the PRAGMA writer.
+func rawValueToString(v bson.RawValue) string {
+	switch v.Type {
+	case bson.TypeString:
+		return v.StringValue()
+	case bson.TypeBoolean:
+		return strconv.FormatBool(v.Boolean())
+	case bson.TypeInt32, bson.TypeInt64, bson.TypeDouble:
+		if f, ok := v.AsFloat64(); ok {
+			return strconv.FormatInt(int64(f), 10)
+		}
+	}
+	return ""
 }
 
 // engineCollMod is the public layer's gathered collMod request before it is folded

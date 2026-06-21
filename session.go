@@ -68,7 +68,7 @@ func (s *session) StartTransaction(opts ...*options.TransactionOptions) error {
 	if s.db.isClosed() {
 		return ErrClosed
 	}
-	s.multi = s.db.eng.Begin(collection.SnapshotIsolation)
+	s.multi = s.db.eng.Begin(s.db.isolationDefault().level())
 	return nil
 }
 
