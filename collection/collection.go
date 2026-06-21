@@ -262,6 +262,9 @@ func (c *Collection) BeginReadOnly() *Txn {
 // §7.2, §10).
 func (c *Collection) BeginTx(opts TransactionOptions) *Txn {
 	startVer, txnID := c.orc.Acquire()
+	if opts.Isolation == Serializable {
+		c.orc.RegisterSSI(txnID, startVer)
+	}
 	return &Txn{c: c, startVer: startVer, txnID: txnID, writable: true, iso: opts.Isolation}
 }
 

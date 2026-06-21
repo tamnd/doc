@@ -177,6 +177,7 @@ func (t *Txn) CountDocuments(filter bson.Raw) (int64, error) {
 	}
 	var n int64
 	for _, key := range t.scanKeys() {
+		t.recordRead(key)
 		doc := t.currentDoc(key)
 		if doc != nil && m.Match(doc) {
 			n++
@@ -194,12 +195,20 @@ func (t *Txn) Commit() error {
 		return ErrTxnDone
 	}
 	if !t.writable || !t.hasWrites() {
+		if t.iso == Serializable {
+			t.c.orc.ReleaseSSI(t.txnID)
+		}
 		t.c.orc.Release(t.startVer)
 		t.done = true
 		t.c.gc()
 		return nil
 	}
-	_, err := t.c.orc.Commit(t.startVer, t.conflictKeys(), t.durable, t.publish)
+	var err error
+	if t.iso == Serializable {
+		_, err = t.c.orc.CommitSerializable(t.startVer, t.txnID, t.conflictKeys(), t.durable, t.publish)
+	} else {
+		_, err = t.c.orc.Commit(t.startVer, t.conflictKeys(), t.durable, t.publish)
+	}
 	t.done = true
 	t.c.gc()
 	return err
@@ -212,10 +221,24 @@ func (t *Txn) Rollback() error {
 	if t.done {
 		return ErrTxnDone
 	}
+	if t.iso == Serializable {
+		t.c.orc.ReleaseSSI(t.txnID)
+	}
 	t.c.orc.Release(t.startVer)
 	t.done = true
 	t.c.gc()
 	return nil
+}
+
+// recordRead registers an overlay key in the transaction's read set when it runs
+// under serializable isolation, so the oracle can detect a read-write antidependency
+// between this read and a concurrent writer of the same document (spec 2061 doc 06
+// §10.4). It is a no-op under snapshot isolation, so the SI read path is untouched.
+func (t *Txn) recordRead(key string) {
+	if t.iso != Serializable {
+		return
+	}
+	t.c.orc.RecordRead(t.txnID, t.startVer, hashKey(key))
 }
 
 // ---- read helpers --------------------------------------------------------
@@ -267,12 +290,16 @@ func (t *Txn) findMatch(filter bson.Raw) (string, bson.Raw, error) {
 	if key, ok, kerr := idEqualityKey(filter); kerr != nil {
 		return "", nil, kerr
 	} else if ok {
+		// A point _id read is an antidependency edge whether or not it finds a
+		// document: a concurrent insert of this _id is a phantom this read missed.
+		t.recordRead(key)
 		if doc := t.currentDoc(key); doc != nil && m.Match(doc) {
 			return key, doc, nil
 		}
 		return "", nil, nil
 	}
 	for _, key := range t.scanKeys() {
+		t.recordRead(key)
 		doc := t.currentDoc(key)
 		if doc != nil && m.Match(doc) {
 			return key, doc, nil

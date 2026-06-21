@@ -41,6 +41,22 @@ func (e *WriteConflictError) Error() string {
 // generic retriable check recognizes it.
 func (e *WriteConflictError) Unwrap() error { return storage.ErrConflict }
 
+// SerializationFailureError reports that a transaction under serializable isolation was
+// aborted to prevent a non-serializable execution: it was the pivot of a dangerous
+// structure of read-write antidependencies, the write-skew case (spec 2061 doc 06
+// §10.5). It is retriable; a retry takes a fresh snapshot that includes the writes that
+// formed the structure, so the transaction's invariant check usually makes the second
+// attempt commit without skew.
+type SerializationFailureError struct{}
+
+func (e *SerializationFailureError) Error() string {
+	return "collection: serialization failure under serializable isolation; retry the transaction"
+}
+
+// Unwrap lets errors.Is(err, storage.ErrConflict) match a SerializationFailureError so
+// it rides the same retry path as a write conflict.
+func (e *SerializationFailureError) Unwrap() error { return storage.ErrConflict }
+
 // IsRetriable reports whether an error from a transaction body or commit is a
 // transient conflict that a fresh-snapshot retry may resolve: a write-write
 // conflict or a serialization failure (both unwrap to storage.ErrConflict). A
@@ -182,6 +198,10 @@ func mapCommitErr(err error) error {
 	var ce *mvcc.ConflictError
 	if errors.As(err, &ce) {
 		return &WriteConflictError{ConflictVer: ce.ConflictVer}
+	}
+	var se *mvcc.SerializationFailureError
+	if errors.As(err, &se) {
+		return &SerializationFailureError{}
 	}
 	return err
 }
