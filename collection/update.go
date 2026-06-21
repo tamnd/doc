@@ -255,7 +255,7 @@ func (t *Txn) FindOneAndUpdate(filter, updateDoc bson.Raw, opts FindModifyOption
 		if err := checkIDPreserved(before, newDoc); err != nil {
 			return nil, err
 		}
-		t.bufferReplace(key, newDoc)
+		t.bufferReplace(key, newDoc, false)
 	}
 	return t.returnDoc(before, newDoc, opts)
 }
@@ -288,7 +288,7 @@ func (t *Txn) FindOneAndReplace(filter, replacement bson.Raw, opts FindModifyOpt
 		return nil, err
 	}
 	if !bytes.Equal(before, newDoc) {
-		t.bufferReplace(key, newDoc)
+		t.bufferReplace(key, newDoc, true)
 	}
 	return t.returnDoc(before, newDoc, opts)
 }
@@ -358,7 +358,7 @@ func (t *Txn) applyOperatorUpdate(key string, doc bson.Raw, u *update.Update) (b
 	if err := t.validateWrite(newDoc, doc, false); err != nil {
 		return false, err
 	}
-	t.bufferReplace(key, newDoc)
+	t.bufferReplace(key, newDoc, false)
 	return true, nil
 }
 
@@ -378,7 +378,7 @@ func (t *Txn) applyReplace(key string, doc, replacement bson.Raw) (bool, error) 
 	if err := t.validateWrite(newDoc, doc, false); err != nil {
 		return false, err
 	}
-	t.bufferReplace(key, newDoc)
+	t.bufferReplace(key, newDoc, true)
 	return true, nil
 }
 
@@ -386,7 +386,7 @@ func (t *Txn) applyReplace(key string, doc, replacement bson.Raw) (bool, error) 
 // the committed version (if any) and installs newDoc, matching the delete path's
 // removeRID handling. A key first written in this transaction has no committed
 // version, so only insertDoc is overwritten.
-func (t *Txn) bufferReplace(key string, newDoc bson.Raw) {
+func (t *Txn) bufferReplace(key string, newDoc bson.Raw, replaced bool) {
 	p := t.ensurePending(key)
 	if rid, old, ok := t.committedVersion(key); ok {
 		p.removeRID = rid
@@ -394,6 +394,7 @@ func (t *Txn) bufferReplace(key string, newDoc bson.Raw) {
 		p.hasRemove = true
 	}
 	p.insertDoc = newDoc
+	p.replaced = replaced
 }
 
 // bufferDelete buffers a delete of an existing overlay key.

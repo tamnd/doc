@@ -47,6 +47,7 @@ type pendingOp struct {
 	removeRID storage.RID
 	removeDoc bson.Raw // the committed document being superseded, for secondary-index upkeep
 	hasRemove bool
+	replaced  bool // a remove+insert that came from a whole-document replace, not a field update
 }
 
 func (p *pendingOp) noop() bool { return p.insertDoc == nil && !p.hasRemove }
@@ -231,6 +232,7 @@ func (t *Txn) Commit() error {
 	}
 	if err == nil {
 		t.committedV = cv
+		t.c.fireChange(t.changeRecords(), cv)
 	}
 	t.done = true
 	t.c.gc()

@@ -119,11 +119,19 @@ func (m *MultiTxn) Commit() error {
 		}
 	}
 
-	var err error
+	var (
+		cv  uint64
+		err error
+	)
 	if m.iso == Serializable {
-		_, err = m.orc.CommitSerializable(m.startVer, m.txnID, writeSet, durable, publish)
+		cv, err = m.orc.CommitSerializable(m.startVer, m.txnID, writeSet, durable, publish)
 	} else {
-		_, err = m.orc.Commit(m.startVer, writeSet, durable, publish)
+		cv, err = m.orc.Commit(m.startVer, writeSet, durable, publish)
+	}
+	if err == nil {
+		for _, c := range m.order {
+			c.fireChange(m.subs[c].changeRecords(), cv)
+		}
 	}
 	m.gcAll()
 	return mapCommitErr(err)

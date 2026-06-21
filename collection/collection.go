@@ -112,6 +112,10 @@ type Collection struct {
 	// from the catalog record; the zero value validates nothing and is uncapped.
 	pol Policy
 
+	// emit, when set by the engine, receives the change records of every committed
+	// transaction so a change stream can observe them; nil means no feed.
+	emit EmitFunc
+
 	mu       sync.Mutex
 	byID     map[string]*chain      // overlay key (encoded _id) -> version chain
 	order    []string               // overlay keys in first-insert order, for natural scan
@@ -205,6 +209,10 @@ type Deps struct {
 	// PersistCatalog stages that record into the pager commit at durable time.
 	OnIDIndexRoot  func(uint32)
 	PersistCatalog func() error
+	// OnChange receives the change records of every committed transaction on this
+	// collection. The engine sets it to forward records to the database change feed,
+	// tagged with the namespace. Nil leaves the collection without a hook.
+	OnChange EmitFunc
 }
 
 // NewWithDeps opens a collection bound to the engine's shared resources, returning
@@ -240,6 +248,7 @@ func NewWithDeps(d Deps) (*Collection, uint64, error) {
 		byID:          make(map[string]*chain),
 		dirty:         make(map[string]struct{}),
 		ridOwner:      make(map[storage.RID]string),
+		emit:          d.OnChange,
 	}
 	onRoot := func(root uint32) {
 		if d.OnIDIndexRoot != nil {

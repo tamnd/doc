@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tamnd/doc/collection"
 	"github.com/tamnd/doc/engine"
 	"github.com/tamnd/doc/pager"
 	"github.com/tamnd/doc/sys"
@@ -104,6 +105,8 @@ type DB struct {
 
 	ttlStop chan struct{} // closed to stop the background sweeper
 	ttlDone chan struct{} // closed when the sweeper goroutine has returned
+
+	feed *changeFeed // in-memory change broadcaster, fed by the engine commit path
 }
 
 // Open opens an existing .doc file or creates a new one. The special path
@@ -151,6 +154,10 @@ func OpenContext(ctx context.Context, path string, opts ...Option) (*DB, error) 
 		return nil, mapEngineErr(err)
 	}
 	db := &DB{eng: eng, clock: clock, cfg: cfg, defaultIso: isoSnapshot}
+	db.feed = newChangeFeed()
+	eng.SetChangeHook(func(dbName, coll string, recs []collection.ChangeRecord, cv uint64) {
+		db.feed.publish(dbName, coll, recs, cv)
+	})
 	if !cfg.readOnly && cfg.ttlInterval > 0 {
 		db.startTTLSweeper(cfg.ttlInterval)
 	}
