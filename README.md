@@ -84,7 +84,7 @@ See the [installation guide](https://doc.tamnd.com/getting-started/installation/
 - A MongoDB wire server with SCRAM authentication, RBAC, and TLS, checked against the official Go, Node, and Python drivers and `mongosh`.
 - At-rest page-level encryption, and an interactive shell and operational tooling.
 
-doc is at v1: the library API, the PRAGMA catalogue, and the file format are stable.
+doc is pre-1.0. The engine is complete and tested, but the library API is still settling toward 1.0, so a 0.x bump may reshape an exported name. The on-disk file format is versioned and forward-checked.
 See [stability](https://doc.tamnd.com/reference/stability/).
 
 ## Documentation
