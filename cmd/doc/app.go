@@ -68,6 +68,13 @@ func (a *app) openFile(path string) error {
 	if a.cfg.readonly {
 		opts = append(opts, doc.WithReadOnly(true))
 	}
+	if a.cfg.encrypted() && !a.memory {
+		opt, err := a.cfg.encryptionOption()
+		if err != nil {
+			return openError(err.Error())
+		}
+		opts = append(opts, opt)
+	}
 	openPath := path
 	if a.memory {
 		openPath = ":memory:"

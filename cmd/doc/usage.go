@@ -30,6 +30,7 @@ var subcommands = map[string]bool{
 	"compact":  true,
 	"reindex":  true,
 	"serve":    true,
+	"rekey":    true,
 }
 
 func isSubcommand(s string) bool { return subcommands[s] }
@@ -59,6 +60,8 @@ Global flags:
       --cache <bytes>     buffer pool size; accepts K, M, G suffixes (default 64M)
       --sync <level>      OFF, NORMAL, FULL, or EXTRA (default NORMAL)
       --db <name>         database to use on open (default "default")
+      --passphrase <p>    open an encrypted file with this passphrase (or DOC_PASSPHRASE)
+      --key-file <path>   open an encrypted file with a raw 32-byte key from this file
       --width <n>         column width limit in table mode
       --limit <n>         truncate query results to at most n documents
       --no-color          suppress ANSI colors
@@ -72,6 +75,8 @@ Subcommands:
   doc info <file>         print the file header
   doc validate <file>     run the integrity check (exit 4 on failure)
   doc stats <file>        print database statistics
+  doc <file> rekey ...    rotate the encryption key (--new-passphrase or --new-key-file;
+                          --data re-encrypts every page under a fresh data key)
 
 Run "doc <file>" then ".help" inside the shell for the full command reference.
 `

@@ -9,6 +9,54 @@ import (
 	"github.com/tamnd/doc"
 )
 
+// encrypted reports whether an encryption secret was supplied on the command line or in the
+// environment, in which case the file is opened encrypted.
+func (c *config) encrypted() bool { return c.passphraseSet || c.keyFile != "" }
+
+// encryptionOption resolves the configured secret into a doc.Option. A passphrase takes the
+// PBKDF2 path; a key file supplies a raw 32-byte key read from disk. Setting both is an error.
+func (c *config) encryptionOption() (doc.Option, error) {
+	if c.passphraseSet && c.keyFile != "" {
+		return nil, fmt.Errorf("set only one of --passphrase and --key-file")
+	}
+	if c.keyFile != "" {
+		key, err := readRawKey(c.keyFile)
+		if err != nil {
+			return nil, err
+		}
+		return doc.WithEncryptionKey(key), nil
+	}
+	return doc.WithPassphrase(c.passphrase), nil
+}
+
+// encryptionKey resolves the configured secret into a doc.EncryptionKey, the form the
+// rotation helpers take.
+func (c *config) encryptionKey() (doc.EncryptionKey, error) {
+	if c.passphraseSet && c.keyFile != "" {
+		return doc.EncryptionKey{}, fmt.Errorf("set only one of --passphrase and --key-file")
+	}
+	if c.keyFile != "" {
+		key, err := readRawKey(c.keyFile)
+		if err != nil {
+			return doc.EncryptionKey{}, err
+		}
+		return doc.RawKey(key), nil
+	}
+	return doc.PassphraseKey(c.passphrase), nil
+}
+
+// readRawKey reads a raw key file and checks it is exactly 32 bytes.
+func readRawKey(path string) ([]byte, error) {
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read key file: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("key file must hold exactly 32 bytes, got %d", len(key))
+	}
+	return key, nil
+}
+
 // outputMode is the wire shape of a command's result.
 type outputMode int
 
@@ -29,6 +77,12 @@ type config struct {
 	cacheBytes int64
 	sync       doc.SyncLevel
 	pragmas    []string
+
+	// passphrase and keyFile select the secret that opens an encrypted file. At most one is
+	// set; keyFile names a file holding a raw 32-byte key. An empty pair opens cleartext.
+	passphrase    string
+	passphraseSet bool
+	keyFile       string
 
 	mode      outputMode
 	modeSet   bool // an explicit format flag was given
@@ -71,6 +125,10 @@ func parseArgs(args []string) (*config, bool, error) {
 	}
 	c.file = os.Getenv("DOC_FILE")
 	c.host = os.Getenv("DOC_HOST")
+	if pv, ok := os.LookupEnv("DOC_PASSPHRASE"); ok {
+		c.passphrase, c.passphraseSet = pv, true
+	}
+	c.keyFile = os.Getenv("DOC_KEY_FILE")
 	if f := os.Getenv("DOC_FORMAT"); f != "" {
 		if m, ok := parseMode(f); ok {
 			c.mode, c.modeSet = m, true
@@ -166,6 +224,20 @@ func parseArgs(args []string) (*config, bool, error) {
 				return nil, false, err
 			}
 			c.host = v
+			i = ni
+		case a == "--passphrase":
+			v, ni, err := flagValue(args, i, a)
+			if err != nil {
+				return nil, false, err
+			}
+			c.passphrase, c.passphraseSet = v, true
+			i = ni
+		case a == "--key-file":
+			v, ni, err := flagValue(args, i, a)
+			if err != nil {
+				return nil, false, err
+			}
+			c.keyFile = v
 			i = ni
 		case a == "--width":
 			v, ni, err := flagValue(args, i, a)
