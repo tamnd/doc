@@ -71,8 +71,8 @@ type DatabaseStats struct {
 
 // ListDatabasesResult is the structured form returned by ListDatabases.
 type ListDatabasesResult struct {
-	Databases  []DatabaseSpecification
-	TotalSize  int64
+	Databases []DatabaseSpecification
+	TotalSize int64
 }
 
 // DatabaseSpecification is one entry of a ListDatabases result.
