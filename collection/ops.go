@@ -56,20 +56,8 @@ func (t *Txn) InsertOne(d bson.Raw) (bson.RawValue, error) {
 	if !t.writable {
 		return bson.RawValue{}, storage.ErrReadOnly
 	}
-	out, idv, err := bson.EnsureID(d, t.c.gen)
-	if err != nil {
-		return bson.RawValue{}, err
-	}
-	key, err := overlayKey(idv)
-	if err != nil {
-		return bson.RawValue{}, err
-	}
-	if t.currentDoc(key) != nil {
-		return bson.RawValue{}, ErrDuplicateKey
-	}
-	p := t.ensurePending(key)
-	p.insertDoc = out
-	return idv, nil
+	_, idv, err := t.insertBuffered(d)
+	return idv, err
 }
 
 // FindOne returns a copy of the first document matching filter, or nil if none
@@ -148,14 +136,33 @@ func (t *Txn) DeleteOne(filter bson.Raw) (int64, error) {
 	if doc == nil {
 		return 0, nil
 	}
-	p := t.ensurePending(key)
-	if rid, old, ok := t.committedVersion(key); ok {
-		p.removeRID = rid
-		p.removeDoc = old
-		p.hasRemove = true
-	}
-	p.insertDoc = nil
+	t.bufferDelete(key)
 	return 1, nil
+}
+
+// DeleteMany deletes every document matching filter and returns the number
+// deleted.
+func (t *Txn) DeleteMany(filter bson.Raw) (int64, error) {
+	if t.done {
+		return 0, ErrTxnDone
+	}
+	if !t.writable {
+		return 0, storage.ErrReadOnly
+	}
+	m, err := compileFilter(filter)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, key := range t.scanKeys() {
+		doc := t.currentDoc(key)
+		if doc == nil || !m.Match(doc) {
+			continue
+		}
+		t.bufferDelete(key)
+		n++
+	}
+	return n, nil
 }
 
 // CountDocuments returns the number of documents matching filter.

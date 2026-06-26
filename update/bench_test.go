@@ -54,6 +54,43 @@ func BenchmarkApplySet(b *testing.B)   { benchApply(b, setOne()) }
 func BenchmarkApplyInc(b *testing.B)   { benchApply(b, incOne()) }
 func BenchmarkApplyMixed(b *testing.B) { benchApply(b, mixed()) }
 
+// pushEach builds {$push:{tags:{$each:["b","c"],$sort:1,$slice:5}}}.
+func pushEach() bson.Raw {
+	mod := bson.NewBuilder().
+		AppendArray("$each", bson.BuildArray(vStr("b"), vStr("c"))).
+		AppendInt32("$sort", 1).
+		AppendInt32("$slice", 5).
+		Build()
+	return bson.NewBuilder().AppendDocument("$push",
+		bson.NewBuilder().AppendDocument("tags", mod).Build()).Build()
+}
+
+// pullScalar builds {$pull:{tags:"a"}}.
+func pullScalar() bson.Raw {
+	return bson.NewBuilder().AppendDocument("$pull",
+		bson.NewBuilder().AppendValue("tags", vStr("a")).Build()).Build()
+}
+
+func BenchmarkApplyPushEach(b *testing.B)   { benchApplyArr(b, pushEach()) }
+func BenchmarkApplyPullScalar(b *testing.B) { benchApplyArr(b, pullScalar()) }
+
+// benchApplyArr measures an array operator over a document carrying a tags array.
+func benchApplyArr(b *testing.B, upd bson.Raw) {
+	b.Helper()
+	u, err := Compile(upd)
+	if err != nil {
+		b.Fatal(err)
+	}
+	d := doc(fInt("_id", 1), fArr("tags", vStr("a"), vStr("d"), vStr("e")))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := u.Apply(d, epoch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // benchApply measures one compiled update applied repeatedly to a fresh document.
 func benchApply(b *testing.B, upd bson.Raw) {
 	b.Helper()

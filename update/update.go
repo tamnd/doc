@@ -9,9 +9,10 @@
 //
 // M3-b implements the field operators $set, $unset, $inc, $mul, $min, $max,
 // $rename, and $currentDate over dotted paths through sub-documents (and existing
-// array elements). The array operators ($push, $pull, $pop, $addToSet, ...), the
-// positional operators ($, $[], $[id]), $setOnInsert, $bit, and aggregation-
-// pipeline updates arrive in M4 (spec 2061 doc 19 §22).
+// array elements). M4 adds the array operators ($push with $each/$sort/$slice/
+// $position, $addToSet, $pop, $pull, $pullAll), $bit, and $setOnInsert (applied
+// only by ApplyForInsert, the upsert insert branch). The positional operators
+// ($, $[], $[id]) and aggregation-pipeline updates remain (spec 2061 doc 19 §22).
 package update
 
 import (
@@ -59,15 +60,28 @@ const (
 	opRename
 	opCurrentDateDate
 	opCurrentDateTimestamp
+	opPush
+	opAddToSet
+	opPop
+	opPull
+	opPullAll
+	opBit
 )
 
 // operation is one compiled (operator, path, operand) triple. dest is the
-// destination path for $rename; arg is the operand for the value operators.
+// destination path for $rename; arg is the operand for the value operators; the
+// pointer fields carry the parsed argument for the array and bitwise operators.
+// onlyInsert marks a $setOnInsert operation, applied only when an upsert inserts.
 type operation struct {
-	kind opKind
-	path []string
-	dest []string // $rename destination
-	arg  bson.RawValue
+	kind       opKind
+	path       []string
+	dest       []string // $rename destination
+	arg        bson.RawValue
+	push       *pushSpec       // $push
+	vals       []bson.RawValue // $addToSet values, $pullAll values
+	pull       *pullSpec       // $pull
+	bit        *bitSpec        // $bit
+	onlyInsert bool            // $setOnInsert
 }
 
 // Update is a compiled update-operator document.
@@ -160,6 +174,44 @@ func (u *Update) compileOperator(op string, spec bson.RawValue) error {
 			}
 			u.usesNow = true
 			u.ops = append(u.ops, operation{kind: kind, path: path})
+		case "$setOnInsert":
+			u.ops = append(u.ops, operation{kind: opSet, path: path, arg: f.Value, onlyInsert: true})
+		case "$push":
+			ps, perr := compilePush(f.Value)
+			if perr != nil {
+				return perr
+			}
+			u.ops = append(u.ops, operation{kind: opPush, path: path, push: ps})
+		case "$addToSet":
+			vals, aerr := compileAddToSet(f.Value)
+			if aerr != nil {
+				return aerr
+			}
+			u.ops = append(u.ops, operation{kind: opAddToSet, path: path, vals: vals})
+		case "$pop":
+			dir, perr := compilePop(f.Value)
+			if perr != nil {
+				return perr
+			}
+			u.ops = append(u.ops, operation{kind: opPop, path: path, arg: dir})
+		case "$pull":
+			pl, perr := compilePull(f.Value)
+			if perr != nil {
+				return perr
+			}
+			u.ops = append(u.ops, operation{kind: opPull, path: path, pull: pl})
+		case "$pullAll":
+			vals, perr := compilePullAll(f.Value)
+			if perr != nil {
+				return perr
+			}
+			u.ops = append(u.ops, operation{kind: opPullAll, path: path, vals: vals})
+		case "$bit":
+			bs, berr := compileBit(f.Value)
+			if berr != nil {
+				return berr
+			}
+			u.ops = append(u.ops, operation{kind: opBit, path: path, bit: bs})
 		default:
 			return ErrBadUpdate
 		}
@@ -238,14 +290,32 @@ func pathPrefixConflict(a, b []string) bool {
 
 // Apply applies the update to doc and returns the new document and whether it
 // changed. now supplies the value for $currentDate operators (read once for the
-// whole update, matching MongoDB). The input document is never mutated.
+// whole update, matching MongoDB). $setOnInsert operations are skipped: they take
+// effect only on the insert branch of an upsert (see ApplyForInsert). The input
+// document is never mutated.
 func (u *Update) Apply(doc bson.Raw, now time.Time) (bson.Raw, bool, error) {
+	return u.apply(doc, now, false)
+}
+
+// ApplyForInsert applies the update to a freshly constructed document on the
+// insert branch of an upsert, where $setOnInsert operations DO take effect (spec
+// 2061 doc 13 §5.3, §11.1).
+func (u *Update) ApplyForInsert(doc bson.Raw, now time.Time) (bson.Raw, bool, error) {
+	return u.apply(doc, now, true)
+}
+
+// apply runs every operation against a decoded copy of doc; insert selects
+// whether $setOnInsert operations participate.
+func (u *Update) apply(doc bson.Raw, now time.Time, insert bool) (bson.Raw, bool, error) {
 	root, err := decodeDoc(doc)
 	if err != nil {
 		return nil, false, err
 	}
 	for i := range u.ops {
-		if err := u.apply(root, &u.ops[i], now); err != nil {
+		if u.ops[i].onlyInsert && !insert {
+			continue
+		}
+		if err := u.applyOp(root, &u.ops[i], now); err != nil {
 			return nil, false, err
 		}
 	}

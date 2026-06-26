@@ -181,6 +181,16 @@ func (d *DocTarget) Exec(op Op) (Result, error) {
 		}
 		return Result{N: 1}, nil
 
+	case OpAggregate:
+		docs, err := c.Aggregate(op.Pipeline)
+		if err != nil {
+			if code, ok := errCode(err); ok {
+				return Result{ErrCode: code}, nil
+			}
+			return Result{}, err
+		}
+		return Result{Docs: docs}, nil
+
 	case OpDistinct:
 		vals, err := c.Distinct(op.Field, op.Filter)
 		if err != nil {

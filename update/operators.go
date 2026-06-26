@@ -6,8 +6,8 @@ import (
 	"github.com/tamnd/doc/bson"
 )
 
-// apply dispatches one compiled operation against the document tree.
-func (u *Update) apply(root *container, op *operation, now time.Time) error {
+// applyOp dispatches one compiled operation against the document tree.
+func (u *Update) applyOp(root *container, op *operation, now time.Time) error {
 	switch op.kind {
 	case opSet:
 		return applySet(root, op.path, op.arg)
@@ -27,6 +27,18 @@ func (u *Update) apply(root *container, op *operation, now time.Time) error {
 		return applySet(root, op.path, dateValue(now))
 	case opCurrentDateTimestamp:
 		return applySet(root, op.path, timestampValue(now))
+	case opPush:
+		return applyPush(root, op.path, op.push)
+	case opAddToSet:
+		return applyAddToSet(root, op.path, op.vals)
+	case opPop:
+		return applyPop(root, op.path, op.arg)
+	case opPull:
+		return applyPull(root, op.path, op.pull)
+	case opPullAll:
+		return applyPullAll(root, op.path, op.vals)
+	case opBit:
+		return applyBit(root, op.path, op.bit)
 	default:
 		return ErrBadUpdate
 	}
