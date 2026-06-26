@@ -96,9 +96,6 @@ func (s *Store) Insert(doc bson.Raw, ver uint64) {
 func (s *Store) insertLocked(key string, doc bson.Raw, ver uint64) {
 	rid := s.nextRID
 	s.nextRID++
-	if len(s.bufRIDs) == 0 {
-		// new buffer starts at this RID
-	}
 	for _, f := range s.fields {
 		s.bufVals[f] = append(s.bufVals[f], FromField(doc, f))
 	}

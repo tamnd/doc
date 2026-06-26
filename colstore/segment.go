@@ -94,18 +94,6 @@ func (s *Segment) visible(i int, snap uint64) bool {
 	return s.del[i] == 0 || s.del[i] > snap
 }
 
-// tombstone marks the entry for rid deleted at version ver, if the segment holds a
-// live entry for it. It returns whether it found one.
-func (s *Segment) tombstone(rid, ver uint64) bool {
-	for i, r := range s.rids {
-		if r == rid && s.del[i] == 0 {
-			s.del[i] = ver
-			return true
-		}
-	}
-	return false
-}
-
 // skipForRange reports whether a range predicate of the given operator and bound can
 // skip this whole segment using the zone map, without decoding it. ops are the four
 // MQL range operators; a segment with no zone map is never skipped.

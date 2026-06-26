@@ -25,9 +25,13 @@ func run(args []string) int {
 	tty := isTerminal(os.Stdout)
 	resolveDefaults(cfg, tty)
 
-	// A bare `doc version` works without opening any file.
+	// A bare `doc version` works without opening any file. Release builds carry the
+	// commit and build date stamped by the linker; a plain `go build` omits them.
 	if cfg.subcommand == "version" {
 		fmt.Println(versionLine())
+		if c, d := buildDetails(); c != "" || d != "" {
+			fmt.Printf("commit %s\nbuilt %s\n", c, d)
+		}
 		return exitOK
 	}
 	if cfg.host != "" {

@@ -1,15 +1,13 @@
 package main
 
-import "github.com/tamnd/doc"
-
 // versionLine is what --version and `doc version` print.
 func versionLine() string {
-	return "doc " + doc.Version
+	return "doc " + buildVersion()
 }
 
 // versionLineValue is the bare version string without the leading "doc ".
 func versionLineValue() string {
-	return doc.Version
+	return buildVersion()
 }
 
 // subcommands are the non-interactive top-level verbs (spec 2061 doc 15 appendix A).

@@ -202,7 +202,7 @@ func encodeHello(requestID int32, body bson.Raw) []byte {
 	binary.LittleEndian.PutUint32(buf[8:12], 0)
 	binary.LittleEndian.PutUint32(buf[12:16], uint32(opMsg))
 	binary.LittleEndian.PutUint32(buf[16:20], 0) // flags
-	buf[20] = 0                                   // section kind 0
+	buf[20] = 0                                  // section kind 0
 	return append(buf, body...)
 }
 

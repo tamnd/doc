@@ -25,6 +25,14 @@ func (t *Txn) Aggregate(pipeline []bson.Raw) ([]bson.Raw, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A covered terminal $group runs through the column store's vectorized executor,
+	// which folds the decoded columns straight into accumulators and returns the group
+	// documents directly, byte-identical to the pipeline (spec 2061 doc 19 §6.3). The
+	// pipeline is still compiled above so an unsupported $group is rejected the same
+	// way before the fast path is even considered.
+	if docs, ok := t.columnGroup(pipeline); ok {
+		return docs, nil
+	}
 	// A covered analytical pipeline reads its fields from the columnar projection
 	// store instead of the heap (spec 2061 doc 04 §10.5). The store reconstructs only
 	// the covered fields, so the same compiled pipeline produces an identical result.

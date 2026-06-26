@@ -1,46 +1,98 @@
 # doc
 
-A modern, high-performance, low-latency embedded document database for Go that looks and feels like SQLite.
+An embedded, single-file, MongoDB-compatible document database for Go.
+It is to MongoDB what SQLite is to relational data: a library you link into your process, one ordinary file on disk, no server, no daemon.
+
 The whole database is a single self-describing `.doc` file, durability comes from a write-ahead log, and you open it with a path and a line of code.
+doc speaks the MongoDB document model (BSON documents in collections, ObjectId `_id`s) and the MongoDB Query Language, its Go API is shaped like the official MongoDB Go driver, and a server mode answers the MongoDB wire protocol so existing drivers connect unchanged.
 
-doc speaks the MongoDB document model (BSON documents in collections, ObjectId `_id`s) and a subset of the MongoDB Query Language.
-A future server mode answers the MongoDB wire protocol so existing drivers connect unchanged.
+It is written in pure Go with `CGO_ENABLED=0`, with no third-party dependencies in the core, so it cross-compiles to a static binary on every platform Go targets.
 
-It is written in pure Go with `CGO_ENABLED=0`, so it cross-compiles to a static binary on every platform Go targets.
+Documentation: https://doc.tamnd.com
 
-## Status
+```go
+package main
 
-Early. The storage engine is being built milestone by milestone (spec 2061 doc 19).
-What works today:
+import (
+	"context"
+	"fmt"
+	"log"
 
-- **M0** file format, the storage SPI seam, the WAL substrate, and the WAL-mode pager with a 2Q buffer pool.
-- **M1** the slotted-page record store with durable inserts and the `_id` B-tree over the storage seam.
-- **M2** the full BSON value codec, the snapshot-isolation MVCC core (version chains, the watermark oracle, first-committer-wins conflict detection, and version GC), and the `Collection` layer that turns the heap, the `_id` index, and the oracle into snapshot-isolated `InsertOne` / `FindOne` / `Find` / `DeleteOne` / `CountDocuments` over an in-memory version overlay, verified byte for byte against a live MongoDB by the conformance oracle (158 cases).
-- **M3-a** the read query path: the cross-type BSON total order, the MQL match engine (the comparison, logical, element, array, and existence operators with MongoDB's null/missing and type-bracket rules), dotted-path resolution with array fan-out, and projection / sort / skip / limit shaping, wired through the `Find` surface and verified against live MongoDB (293 cases total).
-- **M3-b** the document-mutation write path: the field update operators (`$set`, `$unset`, `$inc`, `$mul`, `$min`, `$max`, `$rename`, `$currentDate`) over a lazily-decoded tree that re-encodes untouched subtrees byte for byte, `updateOne` / `updateMany` / `replaceOne`, the `findAndModify` family, and `distinct`, driven over the version overlay with `_id` immutability enforced, verified against live MongoDB (375 cases total).
-- **M3-c** secondary indexes and the query planner: the persistent index catalog, single-field, compound, multikey, unique, sparse, and partial indexes maintained on the commit path, the order-preserving field encoding, and a cost-based planner with a pull-based execution engine that chooses between a collection scan, an index scan, and a covered scan, with an `Explain` surface. The oracle confirms an index never changes a result across 126 read probes.
+	"github.com/tamnd/doc"
+)
 
-The embedded `Open`/`DB`/`Collection` API and the `doc` binary land as later milestones fill in the layers above this foundation.
+func main() {
+	ctx := context.Background()
 
-## Layout
+	db, err := doc.Open("app.doc")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
 
-| Package    | Role                                                                 |
-| ---------- | -------------------------------------------------------------------- |
-| `format`   | On-disk file format: magic, header, page types.                      |
-| `vfs`      | Virtual file system abstraction (OS files and an in-memory FS).      |
-| `wal`      | Write-ahead log: frames, group commit, recovery.                     |
-| `pager`    | WAL-mode pager and 2Q buffer pool over the VFS.                      |
-| `storage`  | The storage SPI: the seam every layer above builds against.          |
-| `heap`     | Slotted-page document record store.                                  |
-| `index`    | B-tree indexes, the `_id` index, and the order-preserving field encoding. |
-| `bson`     | BSON document codec, the cross-type total order, and order-preserving key encoding. |
-| `query`    | The MQL match engine, projection, sort, and distinct over BSON documents. |
-| `update`   | MongoDB update operators applied to BSON documents (no-op-aware).    |
-| `catalog`  | The persistent secondary-index registry and document-to-key extraction. |
-| `plan`     | The cost-based query planner and the pull-based execution engine.    |
-| `mvcc`     | Snapshot isolation: version chains, the oracle, conflict detection.  |
-| `oracle`   | Behavior-comparison test harness (reference vs subject).             |
-| `sys`      | Clock and id generation.                                             |
+	users := db.Database("shop").Collection("users")
+	if _, err := users.InsertOne(ctx, doc.M{"name": "ada", "age": 36}); err != nil {
+		log.Fatal(err)
+	}
+
+	var u doc.M
+	if err := users.FindOne(ctx, doc.M{"name": "ada"}).Decode(&u); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(u)
+}
+```
+
+The same engine is a command-line tool:
+
+```sh
+doc app.doc --eval 'db.users.find({age: {$gte: 18}})'
+```
+
+And it serves the MongoDB wire protocol when you want an existing driver or `mongosh` to connect:
+
+```sh
+doc app.doc serve --port 27017
+mongosh "mongodb://localhost:27017"
+```
+
+## Install
+
+```sh
+go install github.com/tamnd/doc/cmd/doc@latest   # the CLI
+go get github.com/tamnd/doc@latest               # the library
+```
+
+Or with a package manager:
+
+```sh
+brew install tamnd/tap/doc                        # macOS, Linux
+scoop install doc                                 # Windows (after adding the bucket)
+docker run --rm -v "$PWD:/data" ghcr.io/tamnd/doc app.doc --eval 'db.users.count()'
+```
+
+See the [installation guide](https://doc.tamnd.com/getting-started/installation/) for the Linux apt and dnf repositories and the release archives.
+
+## What you get
+
+- The MongoDB document model and query language, with dotted paths and array fan-out.
+- The aggregation pipeline, including `$lookup` with the MongoDB 5.0 pipeline form.
+- A Go API shaped like the official MongoDB driver, so existing code moves over with little change.
+- Multi-document transactions under snapshot or serializable isolation, on an MVCC core where readers never block writers.
+- Single-field, compound, multikey, unique, sparse, partial, and TTL indexes, with a cost-based planner and `Explain`.
+- A write-ahead log, group commit, crash recovery, online backup, WAL archiving, and point-in-time restore.
+- A MongoDB wire server with SCRAM authentication, RBAC, and TLS, checked against the official Go, Node, and Python drivers and `mongosh`.
+- At-rest page-level encryption, and an interactive shell and operational tooling.
+
+doc is at v1: the library API, the PRAGMA catalogue, and the file format are stable.
+See [stability](https://doc.tamnd.com/reference/stability/).
+
+## Documentation
+
+- [Introduction](https://doc.tamnd.com/getting-started/introduction/) and [quick start](https://doc.tamnd.com/getting-started/quick-start/).
+- [Guides](https://doc.tamnd.com/guides/): CRUD and queries, indexes, transactions, the wire server, operations, and tuning.
+- [Migration from the MongoDB Go driver](https://doc.tamnd.com/reference/migration-from-the-mongodb-go-driver/).
+- [CLI](https://doc.tamnd.com/reference/cli/) and [configuration](https://doc.tamnd.com/reference/configuration/) reference.
 
 ## Build and test
 

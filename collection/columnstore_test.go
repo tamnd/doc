@@ -5,6 +5,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/tamnd/doc/agg"
 	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/colstore"
 	"github.com/tamnd/doc/sys"
@@ -236,6 +237,66 @@ func BenchmarkAggGroupColumn(b *testing.B) {
 		b.Fatalf("enable: %v", err)
 	}
 	pipeline := []bson.Raw{groupStage()}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := c.Aggregate(pipeline); err != nil {
+			b.Fatalf("aggregate: %v", err)
+		}
+	}
+}
+
+// BenchmarkAggGroupColumnReconstruct measures the same $group through the column
+// store's reconstruct path, the M9-c baseline that rebuilds a document per visible row
+// and replays the pipeline. It is the comparison point for the M9-e vectorized
+// executor (BenchmarkAggGroupColumn): the speedup between the two is the document-build
+// and field-relookup cost the executor removes.
+func BenchmarkAggGroupColumnReconstruct(b *testing.B) {
+	c := newBenchColl(b)
+	benchSeed(b, c, 50000)
+	if err := c.EnableColumnStore(colstore.ModeTransactional, []string{"cat", "qty"}); err != nil {
+		b.Fatalf("enable: %v", err)
+	}
+	pipeline := []bson.Raw{groupStage()}
+	p, err := agg.Compile(pipeline)
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		tx := c.BeginReadOnly()
+		docs, ok := tx.columnSource(pipeline)
+		if !ok {
+			b.Fatal("reconstruct path declined")
+		}
+		if _, err := p.RunWith(docs, tx.c.clk.Now().UnixMilli(), tx.aggEnv()); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+		_ = tx.Rollback()
+	}
+}
+
+// wholeCollectionGroup builds {$group: {_id: null, total: {$sum: "$qty"}, avg:
+// {$avg: "$qty"}, n: {$sum: 1}}}, the whole-collection aggregate the vectorized
+// executor runs through its single-group fast path (no per-row key).
+func wholeCollectionGroup() bson.Raw {
+	return bson.NewBuilder().AppendDocument("$group", bson.NewBuilder().
+		AppendNull("_id").
+		AppendDocument("total", bson.NewBuilder().AppendString("$sum", "$qty").Build()).
+		AppendDocument("avg", bson.NewBuilder().AppendString("$avg", "$qty").Build()).
+		AppendDocument("n", bson.NewBuilder().AppendInt32("$sum", 1).Build()).
+		Build()).Build()
+}
+
+// BenchmarkAggGroupColumnWhole measures a whole-collection $sum/$avg through the
+// vectorized executor's single-group fast path: no group key is hashed per row, so the
+// scan stays close to the cost of decoding the qty column and reducing it.
+func BenchmarkAggGroupColumnWhole(b *testing.B) {
+	c := newBenchColl(b)
+	benchSeed(b, c, 50000)
+	if err := c.EnableColumnStore(colstore.ModeTransactional, []string{"cat", "qty"}); err != nil {
+		b.Fatalf("enable: %v", err)
+	}
+	pipeline := []bson.Raw{wholeCollectionGroup()}
 	b.ReportAllocs()
 	for b.Loop() {
 		if _, err := c.Aggregate(pipeline); err != nil {

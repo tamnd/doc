@@ -16,5 +16,10 @@ coverage.out
 /compat/python/.venv/
 /compat/**/__pycache__/
 
+# Docs site build output
+/docs/public/
+/docs/public-pages/
+/docs/public-cf/
+
 # Editor / OS
 .DS_Store
