@@ -21,5 +21,8 @@ coverage.out
 /docs/public-pages/
 /docs/public-cf/
 
+# Wrangler local cache from Cloudflare Pages deploys
+/.wrangler/
+
 # Editor / OS
 .DS_Store
