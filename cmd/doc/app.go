@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/tamnd/doc"
 	"github.com/tamnd/doc/bson"
@@ -77,6 +78,27 @@ func (a *app) openFile(path string) error {
 	}
 	a.db = db
 	a.cfg.file = path
+	if err := a.applyPragmas(); err != nil {
+		_ = a.db.Close()
+		a.db = nil
+		return err
+	}
+	return nil
+}
+
+// applyPragmas applies every --pragma k=v flag collected at startup to the open
+// database (spec 2061 doc 19 §20). A malformed or rejected setting fails the open so
+// a typo in a startup flag surfaces immediately rather than being ignored.
+func (a *app) applyPragmas() error {
+	for _, p := range a.cfg.pragmas {
+		name, value, ok := strings.Cut(p, "=")
+		if !ok {
+			return openError("invalid --pragma " + p + " (want name=value)")
+		}
+		if _, err := a.db.Pragma(strings.TrimSpace(name), strings.TrimSpace(value)); err != nil {
+			return openError(err.Error())
+		}
+	}
 	return nil
 }
 

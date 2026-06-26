@@ -50,6 +50,7 @@ func (d *Database) CreateCollection(ctx context.Context, name string, opts ...*o
 // strings onto the catalog enums (spec 2061 doc 09 §10.3, §10.4).
 func createSpec(opts []*options.CreateCollectionOptions) (engine.CreateSpec, error) {
 	var spec engine.CreateSpec
+	hasValidator, hasLevel := false, false
 	for _, o := range opts {
 		if o == nil {
 			continue
@@ -69,13 +70,21 @@ func createSpec(opts []*options.CreateCollectionOptions) (engine.CreateSpec, err
 				return engine.CreateSpec{}, err
 			}
 			spec.Validator = v
+			hasValidator = true
 		}
 		if o.ValidationLevel != nil {
 			spec.ValidationLevel = validationLevel(*o.ValidationLevel)
+			hasLevel = true
 		}
 		if o.ValidationAction != nil {
 			spec.ValidationAction = validationAction(*o.ValidationAction)
 		}
+	}
+	// MongoDB defaults validationLevel to strict when a validator is set without
+	// an explicit level. The catalog zero value is ValidationOff, which would make
+	// the validator a no-op, so set it here to match.
+	if hasValidator && !hasLevel {
+		spec.ValidationLevel = catalog.ValidationStrict
 	}
 	return spec, nil
 }

@@ -3,6 +3,7 @@ package engine
 import (
 	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/catalog"
+	"github.com/tamnd/doc/pager"
 	"github.com/tamnd/doc/schema"
 )
 
@@ -144,3 +145,15 @@ func (e *Engine) CollMod(db, name string, spec CollModSpec) error {
 	c.SetPolicy(pol)
 	return nil
 }
+
+// PageSize returns the file's page size in bytes, the create-time geometry the
+// page_size PRAGMA reports (spec 2061 doc 19 §21.1).
+func (e *Engine) PageSize() int { return e.pgr.PageSize() }
+
+// SyncLevel returns the pager's current commit durability level, the value the
+// synchronous PRAGMA reads.
+func (e *Engine) SyncLevel() pager.SyncLevel { return e.pgr.SyncLevel() }
+
+// SetSyncLevel changes the pager's commit durability level at runtime, the write
+// half of the synchronous PRAGMA.
+func (e *Engine) SetSyncLevel(l pager.SyncLevel) { e.pgr.SetSync(l) }

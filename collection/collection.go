@@ -451,7 +451,15 @@ func (c *Collection) DeleteMany(filter bson.Raw) (int64, error) {
 // fail, the successful ones are still committed and a *BulkWriteException carrying
 // the partial result is returned (spec 2061 doc 13 §3.3).
 func (c *Collection) InsertMany(docs []bson.Raw, ordered bool) (InsertManyResult, error) {
+	return c.InsertManyBatch(docs, ordered, false)
+}
+
+// InsertManyBatch is InsertMany with an explicit validator-bypass flag, the write
+// primitive the bulk loader drives one batch at a time (spec 2061 doc 14 §19). Each
+// call is its own transaction, so a failed batch never rolls back an earlier one.
+func (c *Collection) InsertManyBatch(docs []bson.Raw, ordered, bypass bool) (InsertManyResult, error) {
 	t := c.Begin()
+	t.SetBypassValidation(bypass)
 	res, bwErr := t.InsertMany(docs, ordered)
 	if err := t.Commit(); err != nil {
 		return res, err

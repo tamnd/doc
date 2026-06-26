@@ -82,8 +82,18 @@ func (a *app) runDot(line string) error {
 		return a.dotStats(args)
 	case "dbstats":
 		return a.dotDBStats()
-	case "import", "export", "dump", "load", "backup",
-		"restore", "explain", "profile", "pragma", "validate", "compact",
+	case "import":
+		return a.dotImport(args)
+	case "export":
+		return a.dotExport(args)
+	case "dump":
+		return a.dotDump(args)
+	case "load":
+		return a.dotLoad(args)
+	case "pragma":
+		return a.dotPragma(args)
+	case "backup",
+		"restore", "explain", "profile", "validate", "compact",
 		"reindex", "vacuum", "pager":
 		return a.dotDeferred(cmd)
 	default:
@@ -176,6 +186,45 @@ func (a *app) dotStats(args []string) error {
 // dotDBStats prints dbStats for the current database.
 func (a *app) dotDBStats() error {
 	return a.renderCommand(bson.NewBuilder().AppendInt32("dbStats", 1).Build())
+}
+
+// dotPragma reads or writes an engine PRAGMA from the shell (spec 2061 doc 19 §20).
+// With no argument it lists every PRAGMA and its current value. With "name" it reads
+// one; with "name=value" it writes one and prints the value it settled on. Unknown or
+// read-only PRAGMAs report the engine's error rather than failing silently.
+func (a *app) dotPragma(args []string) error {
+	if len(args) == 0 {
+		for _, n := range doc.PragmaNames() {
+			val, err := a.db.Pragma(n, "")
+			if err != nil {
+				return classify(err)
+			}
+			if err := a.rend.writeText(n + " = " + val); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	name, value, hasValue := strings.Cut(args[0], "=")
+	name = strings.TrimSpace(name)
+	value = strings.TrimSpace(value)
+	if !hasValue && len(args) > 1 {
+		// Allow ".pragma name value" as well as ".pragma name=value".
+		value = strings.TrimSpace(args[1])
+		hasValue = true
+	}
+	if !hasValue {
+		val, err := a.db.Pragma(name, "")
+		if err != nil {
+			return classify(err)
+		}
+		return a.rend.writeText(name + " = " + val)
+	}
+	val, err := a.db.Pragma(name, value)
+	if err != nil {
+		return classify(err)
+	}
+	return a.rend.writeText(name + " = " + val)
 }
 
 // renderCommand runs cmd through the database dispatcher and prints its reply.
@@ -372,7 +421,7 @@ func (a *app) endSession() {
 func (a *app) dotDeferred(cmd string) error {
 	return cliError{
 		code: exitUsage,
-		msg:  "." + cmd + " is not available in this build yet (it lands with a later milestone: stats/pragma/validate/compact with M6-e, import/export/dump/load with the loaders, backup/restore with M7)",
+		msg:  "." + cmd + " is not available in this build yet (it lands with a later milestone: pragma/validate/compact with M6-e, backup/restore with M7)",
 	}
 }
 

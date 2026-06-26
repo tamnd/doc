@@ -94,9 +94,13 @@ func WithTTLInterval(d time.Duration) Option { return func(c *openConfig) { c.tt
 type DB struct {
 	eng   *engine.Engine
 	clock sys.Clock
+	cfg   openConfig // the resolved open options, read by the PRAGMA surface
 
 	mu     sync.RWMutex
 	closed bool
+
+	pragMu     sync.Mutex // guards the session-runtime PRAGMA state below
+	defaultIso isolation  // default isolation for sessions started on this DB
 
 	ttlStop chan struct{} // closed to stop the background sweeper
 	ttlDone chan struct{} // closed when the sweeper goroutine has returned
@@ -146,7 +150,7 @@ func OpenContext(ctx context.Context, path string, opts ...Option) (*DB, error) 
 	if err != nil {
 		return nil, mapEngineErr(err)
 	}
-	db := &DB{eng: eng, clock: clock}
+	db := &DB{eng: eng, clock: clock, cfg: cfg, defaultIso: isoSnapshot}
 	if !cfg.readOnly && cfg.ttlInterval > 0 {
 		db.startTTLSweeper(cfg.ttlInterval)
 	}
