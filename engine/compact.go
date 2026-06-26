@@ -111,5 +111,7 @@ func specFromRecord(rec *catalog.CollectionRecord) CreateSpec {
 		Validator:        rec.Validator,
 		ValidationLevel:  rec.ValidationLevel,
 		ValidationAction: rec.ValidationAction,
+		ColumnarMode:     rec.Options.ColumnarMode,
+		ColumnarFields:   rec.Options.ColumnarFields,
 	}
 }

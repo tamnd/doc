@@ -232,7 +232,9 @@ func (t *Txn) Commit() error {
 	}
 	if err == nil {
 		t.committedV = cv
-		t.c.fireChange(t.changeRecords(), cv)
+		recs := t.changeRecords()
+		t.c.fireChange(recs, cv)
+		t.c.maintainColumn(recs, cv)
 	}
 	t.done = true
 	t.c.gc()

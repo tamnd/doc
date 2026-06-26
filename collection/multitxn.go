@@ -130,7 +130,9 @@ func (m *MultiTxn) Commit() error {
 	}
 	if err == nil {
 		for _, c := range m.order {
-			c.fireChange(m.subs[c].changeRecords(), cv)
+			recs := m.subs[c].changeRecords()
+			c.fireChange(recs, cv)
+			c.maintainColumn(recs, cv)
 		}
 	}
 	m.gcAll()

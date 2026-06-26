@@ -709,6 +709,8 @@ type CreateCollectionOptions struct {
 	Collation          *Collation
 	TimeSeries         *TimeSeriesOptions
 	ExpireAfterSeconds *int64
+	ColumnarStore      *string
+	ColumnarFields     []string
 }
 
 // CreateCollection returns a fresh builder.
@@ -762,6 +764,20 @@ func (o *CreateCollectionOptions) SetTimeSeriesOptions(t *TimeSeriesOptions) *Cr
 // SetExpireAfterSeconds sets a collection-level TTL for time-series data.
 func (o *CreateCollectionOptions) SetExpireAfterSeconds(n int64) *CreateCollectionOptions {
 	o.ExpireAfterSeconds = &n
+	return o
+}
+
+// SetColumnarStore turns on the columnar projection store for the collection. The
+// mode is "off", "transactional", or "lazy" (spec 2061 doc 04 §10, doc 19 §21.4).
+func (o *CreateCollectionOptions) SetColumnarStore(mode string) *CreateCollectionOptions {
+	o.ColumnarStore = &mode
+	return o
+}
+
+// SetColumnarFields lists the field paths to project into the columnar store. An
+// empty list projects every observed top-level field.
+func (o *CreateCollectionOptions) SetColumnarFields(fields []string) *CreateCollectionOptions {
+	o.ColumnarFields = fields
 	return o
 }
 

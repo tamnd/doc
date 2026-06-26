@@ -21,6 +21,7 @@ import (
 	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/catalog"
 	"github.com/tamnd/doc/collection"
+	"github.com/tamnd/doc/colstore"
 	"github.com/tamnd/doc/format"
 	"github.com/tamnd/doc/mvcc"
 	"github.com/tamnd/doc/pager"
@@ -121,6 +122,16 @@ func Open(fs vfs.FS, path string, opts Options) (*Engine, error) {
 	for _, c := range e.colls {
 		c.SetOracle(e.orc)
 	}
+	// Rebuild the columnar projection store for any collection that persisted one,
+	// now that every collection has its oracle and can open a read snapshot.
+	for _, rec := range mcat.ListCollections("") {
+		if c := e.colls[nsKey(rec.DBName, rec.Name)]; c != nil {
+			if err := enableColumnar(c, rec); err != nil {
+				_ = pgr.Close()
+				return nil, err
+			}
+		}
+	}
 	return e, nil
 }
 
@@ -149,6 +160,33 @@ func (e *Engine) openCollection(rec *catalog.CollectionRecord) (*collection.Coll
 	}
 	c.SetPolicy(pol)
 	return c, mv, nil
+}
+
+// enableColumnar turns on the columnar projection store for an opened collection when
+// its catalog record asks for it (spec 2061 doc 04 §10, doc 19 §21.4). It runs after
+// the shared oracle is bound, because rebuilding the store reads the heap through a
+// read-only transaction that needs a snapshot. The store is a derived structure
+// reconstructed from whatever the heap holds at open. A mode of "" or "off" leaves
+// the collection on the heap-only path.
+func enableColumnar(c *collection.Collection, rec *catalog.CollectionRecord) error {
+	mode, ok := columnarMode(rec.Options.ColumnarMode)
+	if !ok {
+		return nil
+	}
+	return c.EnableColumnStore(mode, rec.Options.ColumnarFields)
+}
+
+// columnarMode maps the persisted columnar_store spelling onto the colstore mode,
+// reporting ok=false for the heap-only spellings so the caller skips enabling.
+func columnarMode(s string) (colstore.Mode, bool) {
+	switch s {
+	case "transactional":
+		return colstore.ModeTransactional, true
+	case "lazy":
+		return colstore.ModeLazy, true
+	default:
+		return colstore.ModeOff, false
+	}
 }
 
 // changeAdapter returns the collection-level emitter that forwards a transaction's
@@ -242,6 +280,12 @@ type CreateSpec struct {
 	Validator        bson.Raw
 	ValidationLevel  catalog.ValidationLevel
 	ValidationAction catalog.ValidationAction
+
+	// Columnar projection store (spec 2061 doc 04 §10, doc 19 §21.4). ColumnarMode
+	// is "", "transactional", or "lazy"; ColumnarFields is the projected field set,
+	// empty meaning every observed top-level field.
+	ColumnarMode   string
+	ColumnarFields []string
 }
 
 // CreateCollection creates a regular collection in db, creating the database record
@@ -302,8 +346,10 @@ func (e *Engine) createLocked(db, name string, spec CreateSpec) (*collection.Col
 		ValidationLevel:  spec.ValidationLevel,
 		ValidationAction: spec.ValidationAction,
 		Options: catalog.CollectionOptions{
-			SizeBytes: spec.SizeBytes,
-			MaxDocs:   spec.MaxDocs,
+			SizeBytes:      spec.SizeBytes,
+			MaxDocs:        spec.MaxDocs,
+			ColumnarMode:   spec.ColumnarMode,
+			ColumnarFields: spec.ColumnarFields,
 		},
 	}
 	e.nextCollID += catalog.CollIDStride
@@ -318,6 +364,9 @@ func (e *Engine) createLocked(db, name string, spec CreateSpec) (*collection.Col
 		return nil, err
 	}
 	c.SetOracle(e.orc)
+	if err := enableColumnar(c, rec); err != nil {
+		return nil, err
+	}
 	e.colls[nsKey(db, name)] = c
 	return c, nil
 }

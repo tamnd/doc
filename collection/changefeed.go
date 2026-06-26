@@ -46,7 +46,7 @@ func (c *Collection) fireChange(recs []ChangeRecord, cv uint64) {
 // buffered. An op that collapsed to a no-op in the transaction (insert then delete of
 // the same _id) produces no record.
 func (t *Txn) changeRecords() []ChangeRecord {
-	if t.c.emit == nil {
+	if t.c.emit == nil && t.c.cstore == nil {
 		return nil
 	}
 	recs := make([]ChangeRecord, 0, len(t.order))

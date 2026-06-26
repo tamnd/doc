@@ -65,6 +65,40 @@ func TestCollectionRecordRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCollectionRecordColumnarRoundTrip(t *testing.T) {
+	in := &CollectionRecord{
+		DBName: "shop",
+		Name:   "sales",
+		CollID: 64,
+		Options: CollectionOptions{
+			ColumnarMode:   "transactional",
+			ColumnarFields: []string{"region", "units", "ts"},
+		},
+	}
+	out := decodeCollection(encodeCollection(in))
+	if out.Options.ColumnarMode != in.Options.ColumnarMode {
+		t.Fatalf("columnar mode = %q, want %q", out.Options.ColumnarMode, in.Options.ColumnarMode)
+	}
+	if len(out.Options.ColumnarFields) != len(in.Options.ColumnarFields) {
+		t.Fatalf("columnar fields = %v, want %v", out.Options.ColumnarFields, in.Options.ColumnarFields)
+	}
+	for i, f := range in.Options.ColumnarFields {
+		if out.Options.ColumnarFields[i] != f {
+			t.Fatalf("columnar field %d = %q, want %q", i, out.Options.ColumnarFields[i], f)
+		}
+	}
+}
+
+// TestCollectionRecordColumnarEmpty checks the heap-only default round-trips with no
+// columnar fields written, so an ordinary collection's record carries nothing extra.
+func TestCollectionRecordColumnarEmpty(t *testing.T) {
+	in := &CollectionRecord{DBName: "shop", Name: "plain", CollID: 32}
+	out := decodeCollection(encodeCollection(in))
+	if out.Options.ColumnarMode != "" || len(out.Options.ColumnarFields) != 0 {
+		t.Fatalf("expected heap-only options, got %+v", out.Options)
+	}
+}
+
 func TestSecondaryCollIDDerivation(t *testing.T) {
 	r := &CollectionRecord{CollID: 32}
 	if r.SecondaryCollID() != 33 {
