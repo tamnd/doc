@@ -188,3 +188,11 @@ func (e *Engine) Backup(w io.Writer, verify bool, progress func(written, total i
 // CommitVersion returns the latest committed MVCC version, the snapshot version a
 // backup records.
 func (e *Engine) CommitVersion() uint64 { return e.Oracle().CommitVersion() }
+
+// SetCommitObserver installs a pager commit observer so a WAL archiver can capture
+// page images as they commit (spec 2061 doc 18 §13.5).
+func (e *Engine) SetCommitObserver(obs pager.CommitObserver) { e.pgr.SetCommitObserver(obs) }
+
+// DurableLSN returns the commit LSN of the most recent commit, the key an archiver
+// correlates a commit's frames with its version.
+func (e *Engine) DurableLSN() uint64 { return e.pgr.DurableLSN() }

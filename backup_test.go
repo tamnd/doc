@@ -3,7 +3,6 @@ package doc
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -183,13 +182,105 @@ func TestBackupStaysWritable(t *testing.T) {
 	}
 }
 
-func TestBackupIncrementalUnsupported(t *testing.T) {
+func TestBackupIncrementalNeedsArchiveSource(t *testing.T) {
 	db := openTestDB(t)
 	seedForBackup(t, db)
 	var buf bytes.Buffer
 	_, err := db.Backup(context.Background(), &buf, BackupOptions{SinceVersion: 5})
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("SinceVersion backup error = %v, want ErrUnsupported", err)
+	if err == nil {
+		t.Fatal("incremental backup without an ArchiveSource should fail")
+	}
+}
+
+// TestIncrementalBackupRoundTrip takes a full base, archives writes past it, then
+// builds an incremental delta from the archive and replays the delta over the base
+// with restore --apply-delta. The restored database must hold base plus delta (spec
+// 2061 doc 18 §10.3).
+func TestIncrementalBackupRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "src.doc"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	c := db.Database("d").Collection("c")
+
+	// Seed 40 documents, then take a full backup as the base.
+	for i := 0; i < 40; i++ {
+		if _, err := c.InsertOne(ctx, M{"_id": i, "n": i}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	baseVer := db.CurrentVersion()
+	base := filepath.Join(dir, "base.doc")
+	bf, err := os.Create(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Backup(ctx, bf, BackupOptions{}); err != nil {
+		t.Fatalf("base backup: %v", err)
+	}
+	_ = bf.Close()
+
+	// Archive writes that land after the base.
+	sink := newMemSink()
+	arch, err := db.ArchiveWAL(WALArchiverOptions{Sink: sink})
+	if err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	for i := 100; i < 160; i++ {
+		if _, err := c.InsertOne(ctx, M{"_id": i, "n": i}); err != nil {
+			t.Fatalf("post-base insert: %v", err)
+		}
+	}
+	arch.Flush()
+	arch.Stop()
+
+	// Build the incremental delta carrying only the commits after the base version.
+	var delta bytes.Buffer
+	dres, err := db.Backup(ctx, &delta, BackupOptions{SinceVersion: baseVer, ArchiveSource: sink})
+	if err != nil {
+		t.Fatalf("incremental backup: %v", err)
+	}
+	if dres.WALFrames == 0 {
+		t.Fatal("incremental delta carried no frames")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Restore the base, then replay the delta file over it.
+	deltaPath := filepath.Join(dir, "delta.seg")
+	if err := os.WriteFile(deltaPath, delta.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "restored.doc")
+	if err := RestoreBase(base, out); err != nil {
+		t.Fatalf("restore base: %v", err)
+	}
+	rr, err := ApplyDelta(out, deltaPath, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("apply delta: %v", err)
+	}
+	if rr.AppliedCommits == 0 {
+		t.Fatal("delta replay applied no commits")
+	}
+
+	rdb, err := Open(out, WithReadOnly(true))
+	if err != nil {
+		t.Fatalf("open restored: %v", err)
+	}
+	defer func() { _ = rdb.Close() }()
+	rep, err := rdb.Check(ctx, true)
+	if err != nil || !rep.Valid {
+		t.Fatalf("restored check: err=%v valid=%v", err, rep.Valid)
+	}
+	got, err := rdb.Database("d").Collection("c").CountDocuments(ctx, M{})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if got != 100 {
+		t.Fatalf("restored doc count = %d, want 100 (40 base + 60 delta)", got)
 	}
 }
 

@@ -56,7 +56,12 @@ func (a *app) runSubcommand() int {
 			return reportTop(err)
 		}
 		return exitOK
-	case "restore", "reindex":
+	case "restore":
+		if err := a.dotRestore(a.cfg.subArgs); err != nil {
+			return reportTop(err)
+		}
+		return exitOK
+	case "reindex":
 		return reportTop(a.dotDeferred(a.cfg.subcommand))
 	case "serve":
 		return reportTop(cliError{code: exitUsage, msg: "doc serve arrives with the wire server in M8"})

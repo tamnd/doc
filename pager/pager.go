@@ -110,6 +110,11 @@ type Pager struct {
 	walFrames     int    // frames appended in the current generation
 	backupActive  int    // outstanding online backups; > 0 freezes the checkpointer
 
+	// observer, when set by SetCommitObserver, is called inside Commit with a copy
+	// of every page image the commit made durable. A WAL archiver subscribes here to
+	// capture frames before a later checkpoint folds them away (spec 2061 doc 18 §13.5).
+	observer CommitObserver
+
 	ctr counters // I/O and cache accounting, read by Stats
 
 	closed bool
@@ -722,6 +727,17 @@ func (p *Pager) commitLocked() error {
 	p.walFrames += len(images)
 	p.ctr.walFrames += uint64(len(images))
 	p.ctr.bytesWritten += uint64(len(images)) * uint64(p.pageSize)
+
+	// Hand the freshly committed images to an archiver, if one is attached, before
+	// the checkpoint below can fold and discard them. The observer keeps its own
+	// copy, so a checkpoint right after is harmless.
+	if p.observer != nil {
+		p.observer(CommitEvent{
+			CommitLSN:   maxLSN,
+			DBSizePages: p.hdr.PageCount,
+			Frames:      images,
+		})
+	}
 
 	// An online backup freezes the checkpointer so the main file it is streaming
 	// stays a stable image. The WAL is allowed to grow past the threshold until the
