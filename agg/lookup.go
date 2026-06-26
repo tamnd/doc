@@ -147,6 +147,10 @@ type lookupSrc struct {
 	ec      *execCtx
 	foreign []bson.Raw
 	loaded  bool
+	// fidx maps a foreign join-key to the indices of the foreign documents that
+	// carry it, built once for the equality form so the join is O(local + foreign)
+	// rather than a scan per input document (spec 2061 doc 12 §11.4, hash join).
+	fidx map[string][]int
 	// cached holds an uncorrelated sub-pipeline result, computed once.
 	cached    []bson.RawValue
 	cachedSet bool
@@ -162,6 +166,9 @@ func (s *lookupSrc) next() (bson.Raw, error) {
 			return nil, err
 		}
 		s.foreign = fdocs
+		if s.stage.hasEquality {
+			s.buildForeignIndex()
+		}
 		s.loaded = true
 	}
 	doc, err := s.in.next()
@@ -187,15 +194,46 @@ func (s *lookupSrc) matchesFor(doc bson.Raw) ([]bson.RawValue, error) {
 	return s.pipelineMatches(doc, cand)
 }
 
+// buildForeignIndex hashes each foreign document by the value(s) of its
+// foreignField. An array-valued field (multikey) is indexed under each element, so
+// the probe stays array-aware. The key is the canonical group key, which collapses
+// the numeric types the same way join equality does (spec 2061 doc 12 §11.4).
+func (s *lookupSrc) buildForeignIndex() {
+	s.fidx = make(map[string][]int, len(s.foreign))
+	for i, f := range s.foreign {
+		fv := resolvePath(mkDoc(f), s.stage.foreignField)
+		for _, c := range joinCandidates(fv) {
+			k := groupKey(c)
+			idx := s.fidx[k]
+			// Skip a duplicate index when the same multikey value repeats, so a
+			// foreign document is never joined to one input more than once.
+			if n := len(idx); n > 0 && idx[n-1] == i {
+				continue
+			}
+			s.fidx[k] = append(idx, i)
+		}
+	}
+}
+
 // equalityMatches returns foreign documents whose foreignField equals the input
-// document's localField, with array-aware and null-aware comparison.
+// document's localField, probing the prebuilt hash index. It collects matched
+// indices into a set and then emits the foreign documents in their original order
+// with no duplicates, matching the array- and null-aware semantics of the scan it
+// replaces.
 func (s *lookupSrc) equalityMatches(doc bson.Raw) []bson.Raw {
 	local := resolvePath(mkDoc(doc), s.stage.localField)
-	want := joinCandidates(local)
-	var out []bson.Raw
-	for _, f := range s.foreign {
-		fv := resolvePath(mkDoc(f), s.stage.foreignField)
-		if joinOverlaps(want, fv) {
+	matched := map[int]struct{}{}
+	for _, w := range joinCandidates(local) {
+		for _, idx := range s.fidx[groupKey(w)] {
+			matched[idx] = struct{}{}
+		}
+	}
+	if len(matched) == 0 {
+		return nil
+	}
+	out := make([]bson.Raw, 0, len(matched))
+	for i, f := range s.foreign {
+		if _, ok := matched[i]; ok {
 			out = append(out, f)
 		}
 	}

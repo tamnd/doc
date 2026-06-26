@@ -61,7 +61,7 @@ func AppendDecodedField(bldr *bson.Builder, key string, b []byte, descending boo
 			return 0, ErrCorruptKey
 		}
 		bits := readMasked64(b[1:9], mask)
-		bldr.AppendDateTime(key, int64(unflipSign(bits)))
+		bldr.AppendDateTime(key, int64(bits^(1<<63)))
 		return 9, nil
 	case tagTimestamp:
 		if len(b) < 9 {
@@ -116,21 +116,29 @@ func FieldLen(b []byte, descending bool) (int, error) {
 	return AppendDecodedField(&sink, "_", b, descending)
 }
 
-// decodeString reads a NUL-escaped string body (after its tag) under mask,
-// returning the string and the bytes consumed including the terminator.
+// decodeString reads an order-preserved string body (after its tag) under mask,
+// returning the string and the bytes consumed including the terminator. It is the
+// inverse of appendOrderedBytes: 0x00 0xFF is a real NUL, 0x00 0x01 terminates, and
+// any other byte after a 0x00 is a corrupt key.
 func decodeString(b []byte, mask byte) (string, int, error) {
 	var out []byte
 	i := 0
 	for i < len(b) {
 		c := b[i] ^ mask
 		if c == 0x00 {
-			// A real NUL is escaped as 0x00 0x01; a lone 0x00 terminates.
-			if i+1 < len(b) && (b[i+1]^mask) == 0x01 {
+			if i+1 >= len(b) {
+				return "", 0, ErrCorruptKey
+			}
+			switch b[i+1] ^ mask {
+			case 0x01: // terminator
+				return string(out), i + 2, nil
+			case 0xFF: // escaped NUL
 				out = append(out, 0x00)
 				i += 2
-				continue
+			default:
+				return "", 0, ErrCorruptKey
 			}
-			return string(out), i + 1, nil
+			continue
 		}
 		out = append(out, c)
 		i++

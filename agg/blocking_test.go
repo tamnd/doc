@@ -409,6 +409,100 @@ func TestLookupPipelineWithLet(t *testing.T) {
 	}
 }
 
+// TestLookupCombined exercises the MongoDB 5.0 form that gives localField and
+// foreignField together with a let and a sub-pipeline: the equality narrows the
+// foreign candidates first, then the correlated sub-pipeline runs over only those.
+func TestLookupCombined(t *testing.T) {
+	orders := []bson.Raw{
+		bson.NewBuilder().AppendInt32("_id", 1).AppendInt32("item", 100).AppendInt32("qty", 5).Build(),
+	}
+	// Two warehouses hold item 100; a third row is item 200 and must never match.
+	inventory := []bson.Raw{
+		bson.NewBuilder().AppendInt32("_id", 100).AppendString("wh", "A").AppendInt32("avail", 1).Build(),
+		bson.NewBuilder().AppendInt32("_id", 100).AppendString("wh", "B").AppendInt32("avail", 9).Build(),
+		bson.NewBuilder().AppendInt32("_id", 200).AppendString("wh", "C").AppendInt32("avail", 9).Build(),
+	}
+	env := &Env{Read: func(string) ([]bson.Raw, error) { return inventory, nil }}
+	// pipeline: [{$match: {$expr: {$gte: ["$avail", "$$q"]}}}]
+	sub := bson.BuildArray(mkDoc(stageD("$match", bson.NewBuilder().
+		AppendValue("$expr", op("$gte", mkString("$avail"), mkString("$$q"))).Build())))
+	body := bson.NewBuilder().
+		AppendString("from", "inventory").
+		AppendString("localField", "item").
+		AppendString("foreignField", "_id").
+		AppendDocument("let", bson.NewBuilder().AppendString("q", "$qty").Build()).
+		AppendArray("pipeline", sub).
+		AppendString("as", "ok").
+		Build()
+	out := runEnv(t, env, orders, stageD("$lookup", body))
+	// Only warehouse B survives: equality drops item 200, then avail>=5 drops A.
+	if got := arrLen(t, out[0], "ok"); got != 1 {
+		t.Fatalf("combined lookup len = %d, want 1 (item 100 and avail>=5)", got)
+	}
+}
+
+// TestLookupLeftOuterEmpty checks the left-outer-join contract: an input with no
+// matching foreign document still passes through, carrying an empty array.
+func TestLookupLeftOuterEmpty(t *testing.T) {
+	orders := []bson.Raw{
+		bson.NewBuilder().AppendInt32("_id", 1).AppendInt32("item", 999).Build(),
+	}
+	inventory := []bson.Raw{
+		bson.NewBuilder().AppendInt32("_id", 100).AppendString("sku", "x").Build(),
+	}
+	env := &Env{Read: func(string) ([]bson.Raw, error) { return inventory, nil }}
+	body := bson.NewBuilder().
+		AppendString("from", "inventory").
+		AppendString("localField", "item").
+		AppendString("foreignField", "_id").
+		AppendString("as", "docs").
+		Build()
+	out := runEnv(t, env, orders, stageD("$lookup", body))
+	if len(out) != 1 {
+		t.Fatalf("left outer dropped the unmatched input: got %d rows", len(out))
+	}
+	if got := arrLen(t, out[0], "docs"); got != 0 {
+		t.Fatalf("unmatched join array len = %d, want 0", got)
+	}
+}
+
+// TestLookupUncorrelatedCached runs an uncorrelated sub-pipeline (no let, no
+// equality) against several input documents. The result is computed once and
+// reused, so every input must carry the same filtered foreign set.
+func TestLookupUncorrelatedCached(t *testing.T) {
+	orders := []bson.Raw{
+		bson.NewBuilder().AppendInt32("_id", 1).Build(),
+		bson.NewBuilder().AppendInt32("_id", 2).Build(),
+		bson.NewBuilder().AppendInt32("_id", 3).Build(),
+	}
+	stock := []bson.Raw{
+		bson.NewBuilder().AppendInt32("_id", 10).AppendInt32("avail", 5).Build(),
+		bson.NewBuilder().AppendInt32("_id", 11).AppendInt32("avail", 50).Build(),
+	}
+	reads := 0
+	env := &Env{Read: func(string) ([]bson.Raw, error) { reads++; return stock, nil }}
+	// pipeline: [{$match: {avail: {$gte: 10}}}] keeps only _id 11.
+	sub := bson.BuildArray(mkDoc(stageD("$match",
+		bson.NewBuilder().AppendDocument("avail", bson.NewBuilder().AppendInt32("$gte", 10).Build()).Build())))
+	body := bson.NewBuilder().
+		AppendString("from", "stock").
+		AppendArray("pipeline", sub).
+		AppendString("as", "hi").
+		Build()
+	out := runEnv(t, env, orders, stageD("$lookup", body))
+	if len(out) != 3 {
+		t.Fatalf("got %d rows, want 3", len(out))
+	}
+	for i, d := range out {
+		if got := arrLen(t, d, "hi"); got != 1 {
+			t.Fatalf("row %d join len = %d, want 1", i, got)
+		}
+	}
+	if reads != 1 {
+		t.Fatalf("foreign collection read %d times, want 1", reads)
+	}
+}
+
 func TestLookupNoEnv(t *testing.T) {
 	orders := []bson.Raw{bson.NewBuilder().AppendInt32("_id", 1).AppendInt32("item", 1).Build()}
 	body := bson.NewBuilder().

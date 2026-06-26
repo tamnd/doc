@@ -1,0 +1,7 @@
+go test fuzz v1
+byte('U')
+int64(-62)
+byte('%')
+int64(-87)
+string("")
+string("0")

@@ -68,7 +68,7 @@ func appendValueKey(dst []byte, v bson.RawValue) ([]byte, error) {
 
 	case bson.TypeDateTime:
 		dst = append(dst, tagDate)
-		return appendSignFlipped64(dst, uint64(v.DateTime())), nil
+		return appendOrderedInt64(dst, v.DateTime()), nil
 
 	case bson.TypeTimestamp:
 		ts := v.Timestamp()
@@ -120,8 +120,22 @@ func appendSignFlippedFloat(dst []byte, f float64) []byte {
 	return appendSignFlipped64(dst, math.Float64bits(f))
 }
 
-// appendSignFlipped64 writes the order-preserving big-endian form of a 64-bit
-// value whose sign lives in bit 63: flip the sign bit if clear, else flip all.
+// appendOrderedInt64 writes the order-preserving big-endian form of a signed
+// two's-complement integer: flip only the sign bit so the full int64 range maps
+// monotonically onto the unsigned range, negatives below non-negatives. This is
+// the correct transform for DateTime, which is a signed millisecond count rather
+// than an IEEE 754 float; pre-1970 dates are negative and must still sort below
+// later ones (spec 2061 doc 07 §3.6). The float path needs the different all-bits
+// invert form for negatives, so the two cannot share one helper.
+func appendOrderedInt64(dst []byte, v int64) []byte {
+	return binary.BigEndian.AppendUint64(dst, uint64(v)^(1<<63))
+}
+
+// appendSignFlipped64 writes the order-preserving big-endian form of an IEEE 754
+// bit pattern whose sign lives in bit 63: flip the sign bit if clear, else flip
+// all bits (negatives have larger magnitude in larger raw words, so the whole
+// word inverts to reverse them). This is the float transform; integers use
+// appendOrderedInt64 instead.
 func appendSignFlipped64(dst []byte, bits uint64) []byte {
 	if bits&(1<<63) == 0 {
 		bits |= 1 << 63
@@ -149,17 +163,32 @@ func appendDecimal128(dst []byte, v [16]byte) []byte {
 	return append(dst, be[:]...)
 }
 
-// appendString appends tag + NUL-escaped UTF-8 bytes + terminator.
+// appendString appends tag + order-preserving escaped UTF-8 bytes + terminator.
 func appendString(dst []byte, s string) []byte {
 	dst = append(dst, tagString)
+	return appendOrderedBytes(dst, s)
+}
+
+// appendOrderedBytes appends s under a prefix-free, order-preserving escaping: a
+// content NUL becomes 0x00 0xFF and the value terminates with 0x00 0x01. Keeping
+// the terminator (0x00 0x01) distinct from an escaped NUL (0x00 0xFF) means no
+// encoded value is ever a byte-prefix of another, which is what lets a descending
+// field reverse the order correctly by inverting bytes (spec 2061 doc 07 §3.5).
+//
+// The earlier scheme escaped NUL as 0x00 0x01 and terminated with a lone 0x00, so
+// a string was a byte-prefix of the same string with a trailing NUL (for example
+// "0" against "0\x00"). Their ascending order came out right but inverting the
+// bytes for a descending field left the prefix relationship intact, so descending
+// did not reverse them. The two-byte terminator removes the prefix.
+func appendOrderedBytes(dst []byte, s string) []byte {
 	for i := 0; i < len(s); i++ {
 		if s[i] == 0x00 {
-			dst = append(dst, 0x00, 0x01)
+			dst = append(dst, 0x00, 0xFF)
 		} else {
 			dst = append(dst, s[i])
 		}
 	}
-	return append(dst, 0x00)
+	return append(dst, 0x00, 0x01)
 }
 
 // appendDocKey encodes a nested document or array injectively: the tag, then for
