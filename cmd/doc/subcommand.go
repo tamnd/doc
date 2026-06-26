@@ -65,6 +65,8 @@ func (a *app) runSubcommand() int {
 		return reportTop(a.dotDeferred(a.cfg.subcommand))
 	case "serve":
 		return a.subServe()
+	case "rekey":
+		return a.subRekey()
 	default:
 		return reportTop(usageErr("unknown subcommand: " + a.cfg.subcommand))
 	}

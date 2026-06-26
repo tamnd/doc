@@ -2,6 +2,7 @@ package wire
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/tamnd/doc"
 	"github.com/tamnd/doc/bson"
@@ -18,6 +19,30 @@ func errorDoc(code int32, codeName, errmsg string) bson.Raw {
 		Build()
 }
 
+// errorDocLabeled builds an error reply that carries an errorLabels array, the hint a
+// driver reads to decide whether to retry the whole transaction (spec 2061 doc 16
+// §13.4). With no labels it is the plain error shape.
+func errorDocLabeled(code int32, codeName, errmsg string, labels ...string) bson.Raw {
+	b := bson.NewBuilder().
+		AppendDouble("ok", 0).
+		AppendInt32("code", code).
+		AppendString("codeName", codeName).
+		AppendString("errmsg", errmsg)
+	if len(labels) > 0 {
+		b.AppendArray("errorLabels", stringArray(labels))
+	}
+	return b.Build()
+}
+
+// stringArray builds a BSON array payload from a slice of strings, keyed by position.
+func stringArray(vals []string) bson.Raw {
+	b := bson.NewBuilder()
+	for i, v := range vals {
+		b.AppendString(strconv.Itoa(i), v)
+	}
+	return b.Build()
+}
+
 // errorReplyFrom turns a library error into a wire error document. A CommandError keeps
 // its code and name; a write exception maps to its first write error's code; anything
 // else falls back to a generic internal error.
@@ -28,12 +53,7 @@ func errorReplyFrom(err error) bson.Raw {
 		if name == "" {
 			name = "Error"
 		}
-		b := bson.NewBuilder().
-			AppendDouble("ok", 0).
-			AppendInt32("code", ce.Code).
-			AppendString("codeName", name).
-			AppendString("errmsg", ce.Message)
-		return b.Build()
+		return errorDocLabeled(ce.Code, name, ce.Message, ce.Labels...)
 	}
 
 	var we doc.WriteException

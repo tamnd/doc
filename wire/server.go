@@ -38,6 +38,10 @@ type Options struct {
 	// authenticated user's roles (spec 2061 doc 16 §19). The loopback exception lets an
 	// operator create the first user while none exist.
 	AuthRequired bool
+	// TLS configures transport encryption for the listener. The zero value leaves TLS off,
+	// which is acceptable only for a loopback-bound listener (spec 2061 doc 16 §9, doc 17
+	// §12). A configured client CA also enables the MONGODB-X509 mechanism.
+	TLS TLSOptions
 	// Logger receives connection lifecycle events; nil means slog.Default.
 	Logger *slog.Logger
 }
@@ -64,6 +68,14 @@ func NewServer(db *doc.DB, opts Options) *Server {
 // On cancel it stops accepting, closes every live connection, and waits for the
 // per-connection goroutines to drain before returning.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	// Apply the TLS mode to the listener before accepting. A bad certificate or CA file is
+	// surfaced here rather than per connection.
+	cfg, err := buildTLSConfig(s.opts.TLS)
+	if err != nil {
+		return err
+	}
+	ln = wrapListener(ln, cfg, s.opts.TLS.Mode)
+
 	// A watcher goroutine closes the listener when the context is canceled, which
 	// unblocks Accept below.
 	var wg sync.WaitGroup

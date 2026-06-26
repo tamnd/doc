@@ -3,6 +3,7 @@ package wire
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -37,6 +38,11 @@ type conn struct {
 	scramIdentity *identity
 	scramConvID   int32
 	convSeq       int32
+
+	// sessions holds the logical sessions opened on this connection, keyed by lsid. The
+	// serial request loop is the only writer, so the map needs no lock (spec 2061 doc 16
+	// §10.1, §15.2).
+	sessions map[string]*wireSession
 }
 
 // conn0Server is the slice of Server a conn needs. It is an alias so server.go and
@@ -47,6 +53,7 @@ type conn0Server = Server
 // framing error makes the stream unrecoverable.
 func (c *conn) serve(ctx context.Context) {
 	defer func() { _ = c.nc.Close() }()
+	defer c.endAllSessions(context.Background())
 	br := bufio.NewReaderSize(c.nc, 32*1024)
 	bw := bufio.NewWriterSize(c.nc, 32*1024)
 
@@ -149,6 +156,16 @@ func (c *conn) isLoopback() bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// tlsState returns the completed TLS handshake state when the connection runs over TLS.
+// X.509 authentication reads the verified peer certificate from it. By the time a SASL
+// command arrives the handshake has already run, so the state is populated.
+func (c *conn) tlsState() (tls.ConnectionState, bool) {
+	if tc, ok := c.nc.(*tls.Conn); ok {
+		return tc.ConnectionState(), true
+	}
+	return tls.ConnectionState{}, false
 }
 
 // nextConvID hands out the next SASL conversation id for this connection.

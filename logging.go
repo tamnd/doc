@@ -57,7 +57,7 @@ func (db *DB) logStartup() {
 		slog.Int64("collectionCount", g.Collections),
 		slog.Int64("indexCount", g.Indexes),
 		slog.Int64("fileSizeBytes", g.FileSizeBytes),
-		slog.Bool("encryptionEnabled", len(db.cfg.encryptionKey) > 0),
+		slog.Bool("encryptionEnabled", db.cfg.key.Set()),
 		slog.Bool("readOnly", db.cfg.readOnly),
 	)
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tamnd/doc/collection"
+	"github.com/tamnd/doc/crypto"
 	"github.com/tamnd/doc/engine"
 	"github.com/tamnd/doc/pager"
 	"github.com/tamnd/doc/sys"
@@ -40,17 +41,17 @@ const memoryPath = ":memory:"
 // openConfig accumulates the functional options before they are folded into the
 // engine options at Open time.
 type openConfig struct {
-	pageSize      int
-	cacheSize     int64
-	syncLevel     SyncLevel
-	codec         Codec
-	encryptionKey []byte
-	busyTimeout   time.Duration
-	readOnly      bool
-	ttlInterval   time.Duration
-	slowOpThresh  time.Duration
-	logger        *slog.Logger
-	profileLevel  int
+	pageSize     int
+	cacheSize    int64
+	syncLevel    SyncLevel
+	codec        Codec
+	key          crypto.KeyOption
+	busyTimeout  time.Duration
+	readOnly     bool
+	ttlInterval  time.Duration
+	slowOpThresh time.Duration
+	logger       *slog.Logger
+	profileLevel int
 }
 
 // engineOptions folds the resolved open config into the engine options. It is
@@ -99,8 +100,21 @@ func WithSyncLevel(l SyncLevel) Option { return func(c *openConfig) { c.syncLeve
 // WithCodec sets the on-disk document codec.
 func WithCodec(codec Codec) Option { return func(c *openConfig) { c.codec = codec } }
 
-// WithEncryptionKey sets a 32-byte AES-256-GCM key. Create-time only.
-func WithEncryptionKey(key []byte) Option { return func(c *openConfig) { c.encryptionKey = key } }
+// WithEncryptionKey encrypts the database at rest under a raw 32-byte key used directly as
+// the key-encryption key (spec 2061 doc 17 §4). This is the path a KMS or key file takes.
+// On a new file it turns on encryption; on an existing file the same key must be supplied to
+// open it, or Open returns ErrWrongKey.
+func WithEncryptionKey(key []byte) Option {
+	return func(c *openConfig) { c.key = crypto.RawKey(key) }
+}
+
+// WithPassphrase encrypts the database at rest under a passphrase, stretched into the
+// key-encryption key with PBKDF2-HMAC-SHA256 (spec 2061 doc 17 §4.2). On a new file it turns
+// on encryption; on an existing file the same passphrase must be supplied to open it, or Open
+// returns ErrWrongKey.
+func WithPassphrase(passphrase string) Option {
+	return func(c *openConfig) { c.key = crypto.Passphrase(passphrase) }
+}
 
 // WithBusyTimeout sets how long Open waits for the write lock before returning
 // ErrBusy.
@@ -181,6 +195,12 @@ func OpenContext(ctx context.Context, path string, opts ...Option) (*DB, error) 
 		fs = vfs.NewMemFS()
 	} else {
 		fs = vfs.NewOSFS()
+	}
+	// When a key is configured, slip the encrypting filesystem between the pager and the real
+	// one so the durable .doc image is AES-256-GCM at rest (spec 2061 doc 17). The wrapper
+	// encrypts only the main file; the WAL and shm sidecars pass through.
+	if cfg.key.Set() && path != memoryPath {
+		fs = crypto.NewFS(fs, path, cfg.key, uint32(cfg.pageSize))
 	}
 
 	clock := sys.SystemClock{}
