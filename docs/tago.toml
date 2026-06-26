@@ -1,0 +1,10 @@
+title       = "doc"
+baseURL     = "https://doc.tamnd.com/"
+description = "doc is an embedded, single-file, MongoDB-compatible document database for Go. It is to MongoDB what SQLite is to relational data: a library you link into your process, one ordinary file on disk, no server, no daemon, with an optional wire-protocol server when you want one."
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/doc"
