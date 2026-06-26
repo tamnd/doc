@@ -250,3 +250,66 @@ func BenchmarkCountDocuments(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkWithTransactionSingleWrite measures the session-managed transaction path
+// for one write: the per-call cost of StartSession, BeginTx, the body, commit, and
+// EndSession over the bare InsertOne the same write would take.
+func BenchmarkWithTransactionSingleWrite(b *testing.B) {
+	c := benchColl(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		id := int64(i)
+		if err := c.WithTransaction(func(tx *Txn) error {
+			_, err := tx.InsertOne(benchDoc(id))
+			return err
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWithTransactionMultiWrite measures a multi-document transaction: ten
+// writes committed atomically through one session-managed transaction, the unit of
+// work the session API exists to make cheap relative to ten separate commits.
+func BenchmarkWithTransactionMultiWrite(b *testing.B) {
+	const batch = 10
+	c := benchColl(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		base := int64(i) * batch
+		if err := c.WithTransaction(func(tx *Txn) error {
+			for j := int64(0); j < batch; j++ {
+				if _, err := tx.InsertOne(benchDoc(base + j)); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkSessionReuse measures reusing one session across many transactions, the
+// path that amortizes session allocation when a caller drives a stream of
+// transactions back to back.
+func BenchmarkSessionReuse(b *testing.B) {
+	c := benchColl(b)
+	s := c.StartSession()
+	defer s.EndSession()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := s.StartTransaction(); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := s.Transaction().InsertOne(benchDoc(int64(i))); err != nil {
+			b.Fatal(err)
+		}
+		if err := s.CommitTransaction(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

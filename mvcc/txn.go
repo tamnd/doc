@@ -21,6 +21,21 @@ func (e *ConflictError) Error() string {
 // Unwrap lets errors.Is(err, storage.ErrConflict) match a ConflictError.
 func (e *ConflictError) Unwrap() error { return storage.ErrConflict }
 
+// SerializationFailureError reports that a serializable transaction was aborted to
+// prevent a non-serializable execution: it sat at the pivot of a dangerous structure
+// of read-write antidependencies, or its commit would have completed one (spec 2061
+// doc 06 §10.5). Like a write conflict it is retriable and unwraps to
+// storage.ErrConflict, so a fresh-snapshot retry usually succeeds.
+type SerializationFailureError struct{}
+
+func (e *SerializationFailureError) Error() string {
+	return "mvcc: serialization failure: write skew or dangerous structure detected"
+}
+
+// Unwrap lets errors.Is(err, storage.ErrConflict) match a SerializationFailureError so
+// the same retry path that handles write conflicts handles it too.
+func (e *SerializationFailureError) Unwrap() error { return storage.ErrConflict }
+
 // engine is the seam between the transaction and the store that holds the
 // committed version chains. Commit calls publish after the oracle assigns the
 // commit version; Rollback and a failed commit call discard. The in-memory Store

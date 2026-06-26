@@ -25,6 +25,22 @@ type Store struct {
 	rid   storage.RID
 }
 
+// OpenStoreWithCollID opens the secondary-index catalog over a caller-chosen heap
+// collection id, so a multi-collection file can give each collection its own index
+// registry on a distinct, self-identifying heap (spec 2061 doc 09 §2.5). OpenStore
+// is the single-collection case pinned to CatalogCollID.
+func OpenStoreWithCollID(pgr *pager.Pager, collID uint32) (*Store, error) {
+	hp, err := heap.Open(pgr, collID)
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{pgr: pgr, hp: hp, rid: storage.NullRID}
+	if err := s.load(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
 // catalogTxn is the trivial storage.Txn the catalog hands to its heap. Catalog
 // records are not MVCC-versioned (the catalog keeps exactly one latest record),
 // so the version is a fixed sentinel and the transaction methods are inert; the
@@ -43,15 +59,7 @@ func (catalogTxn) Rollback() error { return nil }
 // OpenStore opens (or initializes) the catalog over an already-open pager,
 // loading the persisted index specs into memory.
 func OpenStore(pgr *pager.Pager) (*Store, error) {
-	hp, err := heap.Open(pgr, CatalogCollID)
-	if err != nil {
-		return nil, err
-	}
-	s := &Store{pgr: pgr, hp: hp, rid: storage.NullRID}
-	if err := s.load(); err != nil {
-		return nil, err
-	}
-	return s, nil
+	return OpenStoreWithCollID(pgr, CatalogCollID)
 }
 
 // load reads the persisted catalog record and decodes its spec list. An empty

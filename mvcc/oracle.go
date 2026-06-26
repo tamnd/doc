@@ -27,6 +27,12 @@ type Oracle struct {
 	live      map[uint64]int // start version -> count of live snapshots at it
 	minLive   uint64         // cached watermark: min live start version, or commitVer if none
 	recent    []committedTxn // committed-since index, ascending by commit version
+
+	// Serializable-snapshot-isolation tracking (spec 2061 doc 06 §10). These are
+	// touched only by serializable transactions; a snapshot-isolation transaction
+	// never registers, so the SI path pays nothing for them.
+	ssiLive   map[uint64]*ssiTxn // txnID -> live serializable transaction
+	ssiRecent []ssiCommitted     // committed serializable transactions, ascending commitVer
 }
 
 // NewOracle returns an oracle whose commit-version counter starts at
@@ -39,6 +45,7 @@ func NewOracle(startCommitVer uint64) *Oracle {
 		commitVer: startCommitVer,
 		live:      make(map[uint64]int),
 		minLive:   startCommitVer,
+		ssiLive:   make(map[uint64]*ssiTxn),
 	}
 }
 

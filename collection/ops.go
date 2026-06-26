@@ -20,11 +20,13 @@ var ErrTxnDone = errors.New("collection: transaction already finished")
 // transaction that committed since the snapshot aborts Commit with a retriable
 // error (spec 2061 doc 06 §7, §8).
 type Txn struct {
-	c        *Collection
-	startVer uint64
-	txnID    uint64
-	writable bool
-	done     bool
+	c          *Collection
+	startVer   uint64
+	txnID      uint64
+	writable   bool
+	iso        IsolationLevel
+	done       bool
+	committedV uint64 // commit version assigned at Commit, 0 until a write commit succeeds
 
 	pending      map[string]*pendingOp // overlay key -> buffered write
 	order        []string              // pending keys in write order
@@ -176,6 +178,7 @@ func (t *Txn) CountDocuments(filter bson.Raw) (int64, error) {
 	}
 	var n int64
 	for _, key := range t.scanKeys() {
+		t.recordRead(key)
 		doc := t.currentDoc(key)
 		if doc != nil && m.Match(doc) {
 			n++
@@ -193,16 +196,39 @@ func (t *Txn) Commit() error {
 		return ErrTxnDone
 	}
 	if !t.writable || !t.hasWrites() {
+		if t.iso == Serializable {
+			t.c.orc.ReleaseSSI(t.txnID)
+		}
 		t.c.orc.Release(t.startVer)
 		t.done = true
 		t.c.gc()
 		return nil
 	}
-	_, err := t.c.orc.Commit(t.startVer, t.conflictKeys(), t.durable, t.publish)
+	var (
+		cv  uint64
+		err error
+	)
+	if t.iso == Serializable {
+		cv, err = t.c.orc.CommitSerializable(t.startVer, t.txnID, t.conflictKeys(), t.durable, t.publish)
+	} else {
+		cv, err = t.c.orc.Commit(t.startVer, t.conflictKeys(), t.durable, t.publish)
+	}
+	if err == nil {
+		t.committedV = cv
+	}
 	t.done = true
 	t.c.gc()
 	return err
 }
+
+// SnapshotVersion is the commit version the transaction reads from: writes committed
+// at or before it are visible, later ones are not. It is a test and observability hook
+// onto the MVCC snapshot, used by the linearizability checker (spec 2061 doc 19 §19.2).
+func (t *Txn) SnapshotVersion() uint64 { return t.startVer }
+
+// CommitVersion is the version a successful write commit was assigned, or 0 for a
+// read-only transaction, one with no effective writes, or one that has not committed.
+func (t *Txn) CommitVersion() uint64 { return t.committedV }
 
 // Rollback discards the transaction's buffered writes and releases its snapshot.
 // Abort is free: nothing durable was written before commit, so there is nothing to
@@ -211,10 +237,24 @@ func (t *Txn) Rollback() error {
 	if t.done {
 		return ErrTxnDone
 	}
+	if t.iso == Serializable {
+		t.c.orc.ReleaseSSI(t.txnID)
+	}
 	t.c.orc.Release(t.startVer)
 	t.done = true
 	t.c.gc()
 	return nil
+}
+
+// recordRead registers an overlay key in the transaction's read set when it runs
+// under serializable isolation, so the oracle can detect a read-write antidependency
+// between this read and a concurrent writer of the same document (spec 2061 doc 06
+// §10.4). It is a no-op under snapshot isolation, so the SI read path is untouched.
+func (t *Txn) recordRead(key string) {
+	if t.iso != Serializable {
+		return
+	}
+	t.c.orc.RecordRead(t.txnID, t.startVer, hashKey(key))
 }
 
 // ---- read helpers --------------------------------------------------------
@@ -266,12 +306,16 @@ func (t *Txn) findMatch(filter bson.Raw) (string, bson.Raw, error) {
 	if key, ok, kerr := idEqualityKey(filter); kerr != nil {
 		return "", nil, kerr
 	} else if ok {
+		// A point _id read is an antidependency edge whether or not it finds a
+		// document: a concurrent insert of this _id is a phantom this read missed.
+		t.recordRead(key)
 		if doc := t.currentDoc(key); doc != nil && m.Match(doc) {
 			return key, doc, nil
 		}
 		return "", nil, nil
 	}
 	for _, key := range t.scanKeys() {
+		t.recordRead(key)
 		doc := t.currentDoc(key)
 		if doc != nil && m.Match(doc) {
 			return key, doc, nil
@@ -392,6 +436,12 @@ func (t *Txn) durable(cv uint64) error {
 			return err
 		}
 		t.c.catalogDirty = false
+	}
+	if t.c.idRootDirty && t.c.persistExtra != nil {
+		if err := t.c.persistExtra(); err != nil {
+			return err
+		}
+		t.c.idRootDirty = false
 	}
 	return t.c.pgr.Commit()
 }
