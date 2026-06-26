@@ -319,20 +319,25 @@ func (t *Txn) committedVersion(key string) (storage.RID, bson.Raw, bool) {
 // using the _id index fast path for a sole-_id equality filter and a natural-order
 // scan otherwise.
 func (t *Txn) findMatch(filter bson.Raw) (string, bson.Raw, error) {
-	m, err := compileFilter(filter)
-	if err != nil {
-		return "", nil, err
-	}
 	if key, ok, kerr := idEqualityKey(filter); kerr != nil {
 		return "", nil, kerr
 	} else if ok {
 		// A point _id read is an antidependency edge whether or not it finds a
 		// document: a concurrent insert of this _id is a phantom this read missed.
+		//
+		// The lookup is exact: the document stored under this overlay key has this
+		// _id by construction, so the index hit is the entire predicate and no
+		// residual matcher is needed. Skipping the filter compile keeps the warm
+		// point read off the allocator (doc 19 §24.1).
 		t.recordRead(key)
-		if doc := t.currentDoc(key); doc != nil && m.Match(doc) {
+		if doc := t.currentDoc(key); doc != nil {
 			return key, doc, nil
 		}
 		return "", nil, nil
+	}
+	m, err := compileFilter(filter)
+	if err != nil {
+		return "", nil, err
 	}
 	for _, key := range t.scanKeys() {
 		t.recordRead(key)

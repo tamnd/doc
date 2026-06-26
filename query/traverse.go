@@ -19,6 +19,34 @@ func traverse(doc bson.Raw, path []string) ([]bson.RawValue, bool) {
 	return out, found
 }
 
+// traverseSingle walks a dotted path through plain documents only, with no heap
+// allocation. It reports the reached value and whether the path resolved, plus a
+// "simple" flag: simple is false when the walk meets an array at any step, in
+// which case the caller must use the slice-based traverse to honor array fan-out.
+// The reached value may itself be an array (a field that holds one); that stays
+// simple because no intermediate fan-out happened, and the caller handles the
+// element-wise match against it directly.
+func traverseSingle(doc bson.Raw, path []string) (val bson.RawValue, found, simple bool) {
+	cur := bson.RawValue{Type: bson.TypeDocument, Data: doc}
+	for _, comp := range path {
+		if cur.Type == bson.TypeArray {
+			// An array mid-path needs positional indexing and fan-out, both of
+			// which the slice traversal owns.
+			return bson.RawValue{}, false, false
+		}
+		if cur.Type != bson.TypeDocument {
+			// The path runs past a scalar leaf: a clean miss, no fan-out involved.
+			return bson.RawValue{}, false, true
+		}
+		sub, ok := cur.Document().Lookup(comp)
+		if !ok {
+			return bson.RawValue{}, false, true
+		}
+		cur = sub
+	}
+	return cur, true, true
+}
+
 func descend(v bson.RawValue, path []string, out *[]bson.RawValue) bool {
 	if len(path) == 0 {
 		*out = append(*out, v)

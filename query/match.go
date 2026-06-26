@@ -75,6 +75,28 @@ type fieldPred struct {
 }
 
 func (p fieldPred) eval(doc bson.Raw) bool {
+	// Fast path: a path that resolves through plain documents (no array fan-out
+	// at any step) reaches at most one value, so it needs no slice. This is the
+	// common case (a top-level field or a nested document field such as an _id or
+	// a comparison), and keeping it allocation-free is the doc 19 §24.1 predicate
+	// invariant. The walk falls back to the slice traversal the moment it meets an
+	// array, which is where MongoDB's fan-out semantics actually need every value.
+	if v, found, simple := traverseSingle(doc, p.path); simple {
+		if !found {
+			return p.leaf.matchMissing()
+		}
+		if p.leaf.matchValue(v) {
+			return true
+		}
+		if p.leaf.elementWise() && v.Type == bson.TypeArray {
+			for _, e := range arrayElems(v) {
+				if p.leaf.matchValue(e) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	values, present := traverse(doc, p.path)
 	if !present {
 		return p.leaf.matchMissing()

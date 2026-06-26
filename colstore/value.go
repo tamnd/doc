@@ -109,29 +109,6 @@ func (v Value) AsFloat() (float64, bool) {
 	}
 }
 
-// equalKey reports whether two values are the same group key. It mirrors bson.Equal
-// closely enough for the column store's group-by: numeric kinds compare by value
-// across Int and Float, everything else compares within its kind.
-func (v Value) equalKey(o Value) bool {
-	if f1, ok1 := v.AsFloat(); ok1 {
-		if f2, ok2 := o.AsFloat(); ok2 {
-			return f1 == f2
-		}
-		return false
-	}
-	if v.Kind != o.Kind {
-		return false
-	}
-	switch v.Kind {
-	case KindString:
-		return v.S == o.S
-	case KindOther:
-		return v.tag == o.tag && v.S == o.S
-	default:
-		return true // both null
-	}
-}
-
 // hashKey returns a map key that agrees with equalKey: numeric values hash by their
 // float64 value so Int and Float of equal magnitude collapse, the rest by kind and
 // payload.
