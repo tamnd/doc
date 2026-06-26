@@ -29,13 +29,14 @@ const dotHelpText = `Dot-commands (meta-operations):
   .compact            rewrite the file, reclaiming space from deleted documents
   .checkpoint [mode]  fold the WAL into the main file without closing
   .vacuum [pages]     reclaim trailing free pages to the OS (needs auto_vacuum)
+  .backup --out <file> [--verify]   stream a consistent physical backup
   .explain <coll> [filter] [verbosity]   show the query plan for a find
   .begin              begin an explicit transaction
   .commit             commit the current transaction
   .rollback           roll back the current transaction
   .quit               close and exit
-Some commands (.backup, .restore) arrive with a later milestone and
-report so when called.
+Some commands (.restore) arrive with a later milestone and report so
+when called.
 Type .help <cmd> for detail on any command.`
 
 // dotHelpDetail holds the long form for individual commands.
@@ -55,5 +56,6 @@ var dotHelpDetail = map[string]string{
 	"compact":     ".compact - rebuild the file into a fresh, hole-free copy, reclaiming the space held by deleted documents, superseded versions, and forwarding tombstones. Offline: nothing else runs during it",
 	"checkpoint":  ".checkpoint [mode] - fold the write-ahead log into the main file and start a fresh WAL, online, without closing the database. The mode (passive, full, restart, truncate) is accepted for compatibility; doc runs the same full checkpoint for each",
 	"vacuum":      ".vacuum [pages] - reclaim trailing free pages to the operating system, shrinking the file. With a page count it reclaims at most that many; without one it reclaims every trailing free page. Requires PRAGMA auto_vacuum to be incremental or full",
+	"backup":      ".backup --out <file> [--verify] - stream a consistent physical image of the database to a file while it stays open and writable. The image is taken as of one version; the result opens with no WAL replay. --verify re-checks every page checksum as it is copied. Use - as the file to write the raw image to stdout",
 	"explain":     ".explain <coll> [filter] [verbosity] - show how the planner would run a find: the chosen plan and the index it picks. Verbosity is queryPlanner (default) or executionStats",
 }

@@ -108,6 +108,7 @@ type Pager struct {
 	walFlushedLSN uint64 // highest LSN durable in the WAL
 	checkpointSeq uint32 // current WAL generation
 	walFrames     int    // frames appended in the current generation
+	backupActive  int    // outstanding online backups; > 0 freezes the checkpointer
 
 	ctr counters // I/O and cache accounting, read by Stats
 
@@ -722,7 +723,10 @@ func (p *Pager) commitLocked() error {
 	p.ctr.walFrames += uint64(len(images))
 	p.ctr.bytesWritten += uint64(len(images)) * uint64(p.pageSize)
 
-	if p.walFrames >= p.ckptN {
+	// An online backup freezes the checkpointer so the main file it is streaming
+	// stays a stable image. The WAL is allowed to grow past the threshold until the
+	// backup releases; this is the long-backup hazard doc 18 §10.5 documents.
+	if p.walFrames >= p.ckptN && p.backupActive == 0 {
 		return p.checkpointLocked()
 	}
 	return nil

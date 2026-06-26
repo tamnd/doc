@@ -102,8 +102,9 @@ func (a *app) runDot(line string) error {
 		return a.dotVacuum(args)
 	case "explain":
 		return a.dotExplain(args)
-	case "backup",
-		"restore", "profile",
+	case "backup":
+		return a.dotBackup(args)
+	case "restore", "profile",
 		"reindex", "pager":
 		return a.dotDeferred(cmd)
 	default:
@@ -431,7 +432,7 @@ func (a *app) endSession() {
 func (a *app) dotDeferred(cmd string) error {
 	return cliError{
 		code: exitUsage,
-		msg:  "." + cmd + " is not available in this build yet (backup and restore land with M7)",
+		msg:  "." + cmd + " is not available in this build yet (restore lands with M7)",
 	}
 }
 

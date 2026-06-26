@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"io"
+
 	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/catalog"
 	"github.com/tamnd/doc/pager"
@@ -175,3 +177,14 @@ func (e *Engine) CheckpointThreshold() int { return e.pgr.CheckpointThreshold() 
 // SetCheckpointThreshold sets the automatic-checkpoint WAL frame count, the write
 // half of the wal_autocheckpoint pragma.
 func (e *Engine) SetCheckpointThreshold(frames int) { e.pgr.SetCheckpointThreshold(frames) }
+
+// Backup streams a consistent physical image of the database to w without closing
+// it, the engine behind DB.Backup and doc backup (spec 2061 doc 18 §10). It returns
+// the pager's report of how many pages and bytes it wrote.
+func (e *Engine) Backup(w io.Writer, verify bool, progress func(written, total int64)) (pager.BackupInfo, error) {
+	return e.pgr.Backup(w, verify, progress)
+}
+
+// CommitVersion returns the latest committed MVCC version, the snapshot version a
+// backup records.
+func (e *Engine) CommitVersion() uint64 { return e.Oracle().CommitVersion() }

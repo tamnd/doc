@@ -37,6 +37,14 @@ type pool struct {
 	// bytes and must never be stolen to the main file (a redo-only WAL cannot
 	// undo it, spec 2061 doc 05 §1.2); eviction skips such frames.
 	committedLSN uint64
+
+	// freezeDirty holds off stealing any dirty frame while an online backup is
+	// streaming the main file (spec 2061 doc 18 §10). A steal would write the page
+	// back and so mutate the image the backup is copying; with this set, eviction
+	// reclaims only clean frames, leaving the main file stable until the backup
+	// releases. Writers keep going on the WAL and may exhaust the pool of clean
+	// victims during a long backup, the hazard doc 18 §10.5 calls out.
+	freezeDirty bool
 }
 
 func newPool(pageSize, capacity int) *pool {
@@ -141,9 +149,10 @@ func (p *pool) evictFrom(fromA1 bool) *Frame {
 		if v.pins.Load() != 0 {
 			continue
 		}
-		if v.dirty && v.pageLSN > p.committedLSN {
-			// Uncommitted: not stealable. Skip; the owning transaction holds it
-			// resident until it commits or aborts.
+		if v.dirty && (p.freezeDirty || v.pageLSN > p.committedLSN) {
+			// Either uncommitted (a redo-only WAL cannot undo a stolen dirty page,
+			// spec 2061 doc 05 §1.2) or frozen by an online backup that must keep
+			// the main file stable. Skip; the page stays resident.
 			continue
 		}
 		l.remove(v)

@@ -33,7 +33,7 @@ var boolFlags = map[string]bool{
 	"drop": true, "pretty": true, "csv-header": true, "no-csv-header": true,
 	"header-line": true, "type-coerce": true, "skip-indexes": true,
 	"all-databases": true, "no-indexes": true, "restore-indexes": true,
-	"stop-on-error": true,
+	"stop-on-error": true, "verify": true,
 }
 
 // parseFlags splits already-tokenized arguments into positionals, --key value pairs,
