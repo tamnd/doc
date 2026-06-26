@@ -13,8 +13,13 @@ func (a *app) runSubcommand() int {
 	switch a.cfg.subcommand {
 	case "info":
 		return a.subInfo()
-	case "validate":
-		return a.subValidate()
+	case "check", "validate":
+		return a.subCheck()
+	case "compact":
+		if err := a.dotCompact(a.cfg.subArgs); err != nil {
+			return reportTop(err)
+		}
+		return exitOK
 	case "stats":
 		if err := a.dotStats(a.cfg.subArgs); err != nil {
 			return reportTop(err)
@@ -36,7 +41,7 @@ func (a *app) runSubcommand() int {
 		return reportTop(a.dotDump(a.cfg.subArgs))
 	case "load":
 		return reportTop(a.dotLoad(a.cfg.subArgs))
-	case "backup", "restore", "compact", "reindex":
+	case "backup", "restore", "reindex":
 		return reportTop(a.dotDeferred(a.cfg.subcommand))
 	case "serve":
 		return reportTop(cliError{code: exitUsage, msg: "doc serve arrives with the wire server in M8"})
@@ -59,36 +64,12 @@ func (a *app) subInfo() int {
 	return exitOK
 }
 
-// subValidate runs an integrity check. The deep page-and-index checker is M6-e/M7
-// work; until then this confirms the file opened and every catalogued collection can
-// be scanned, exiting 4 if any scan fails (the corruption code CI keys on, spec §17).
-func (a *app) subValidate() int {
-	dbs, err := a.db.ListDatabaseNames(a.ctx(), emptyDoc())
-	if err != nil {
-		return reportTop(cliError{code: exitCorruption, msg: err.Error()})
+// subCheck runs the deep structural and consistency check over the file and prints
+// its report (spec 2061 doc 18 §7.3). It exits 4 when the check finds corruption, the
+// code CI keys on (spec §17). A "full" argument adds the whole-file checksum pass.
+func (a *app) subCheck() int {
+	if err := a.dotCheck(a.cfg.subArgs); err != nil {
+		return reportTop(err)
 	}
-	scanned := 0
-	for _, dbName := range dbs {
-		colls, err := a.db.Database(dbName).ListCollectionNames(a.ctx(), emptyDoc())
-		if err != nil {
-			return reportTop(cliError{code: exitCorruption, msg: err.Error()})
-		}
-		for _, cn := range colls {
-			cur, err := a.db.Database(dbName).Collection(cn).Find(a.ctx(), emptyDoc())
-			if err != nil {
-				return reportTop(cliError{code: exitCorruption, msg: dbName + "." + cn + ": " + err.Error()})
-			}
-			for cur.Next(a.ctx()) {
-				_ = cur.Current()
-			}
-			if err := cur.Err(); err != nil {
-				_ = cur.Close(a.ctx())
-				return reportTop(cliError{code: exitCorruption, msg: dbName + "." + cn + ": " + err.Error()})
-			}
-			_ = cur.Close(a.ctx())
-			scanned++
-		}
-	}
-	_, _ = fmt.Fprintf(os.Stdout, "ok: %d collections scanned, no corruption found\n", scanned)
 	return exitOK
 }

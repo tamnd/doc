@@ -14,6 +14,7 @@ package engine
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,7 +55,17 @@ type Engine struct {
 	mu         sync.Mutex
 	nextCollID uint32
 	colls      map[string]*collection.Collection // (db,coll) -> open handle
+
+	// onChange, when set by the public layer through SetChangeHook, receives the
+	// change records of every committed transaction tagged with its namespace. It is
+	// nil until a watcher exists, so collections opened without it pay nothing on
+	// commit.
+	onChange ChangeHook
 }
+
+// ChangeHook receives one committed transaction's change records together with the
+// database and collection they came from and the commit version that orders them.
+type ChangeHook func(db, coll string, recs []collection.ChangeRecord, commitVersion uint64)
 
 func nsKey(db, name string) string { return db + "\x00" + name }
 
@@ -127,6 +138,7 @@ func (e *Engine) openCollection(rec *catalog.CollectionRecord) (*collection.Coll
 		IDIndexRoot:            rec.IDIndexRoot,
 		OnIDIndexRoot:          func(root uint32) { rec.IDIndexRoot = root },
 		PersistCatalog:         func() error { return e.mcat.StageCollection(rec) },
+		OnChange:               e.changeAdapter(rec.DBName, rec.Name),
 	})
 	if err != nil {
 		return nil, 0, err
@@ -137,6 +149,43 @@ func (e *Engine) openCollection(rec *catalog.CollectionRecord) (*collection.Coll
 	}
 	c.SetPolicy(pol)
 	return c, mv, nil
+}
+
+// changeAdapter returns the collection-level emitter that forwards a transaction's
+// change records to the engine hook, tagged with the namespace. It reads e.onChange
+// at fire time, so a collection opened before the first watcher starts forwarding as
+// soon as SetChangeHook installs the hook. It returns nil when no hook is installed,
+// leaving freshly opened collections on the zero-cost path until a watcher appears.
+func (e *Engine) changeAdapter(db, name string) collection.EmitFunc {
+	if e.onChange == nil {
+		return nil
+	}
+	return func(recs []collection.ChangeRecord, cv uint64) {
+		if h := e.onChange; h != nil {
+			h(db, name, recs, cv)
+		}
+	}
+}
+
+// SetChangeHook installs the engine change hook and binds it to every open collection.
+// The public layer calls it once at open, before any watcher starts, so all collections
+// opened later through createLocked pick the hook up too.
+func (e *Engine) SetChangeHook(h ChangeHook) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onChange = h
+	for key, c := range e.colls {
+		db, name := splitNSKey(key)
+		c.SetChangeHook(e.changeAdapter(db, name))
+	}
+}
+
+// splitNSKey reverses nsKey, recovering the database and collection from a map key.
+func splitNSKey(key string) (db, name string) {
+	if i := strings.IndexByte(key, 0); i >= 0 {
+		return key[:i], key[i+1:]
+	}
+	return "", key
 }
 
 // policyFromRecord compiles the catalog record's validator and reads its capped
@@ -305,6 +354,7 @@ func (e *Engine) DropCollection(db, name string) error {
 		return err
 	}
 	delete(e.colls, nsKey(db, name))
+	e.fireDrop(db, name)
 	// Drop the database record when its last collection is gone.
 	if len(e.mcat.ListCollections(db)) == 0 {
 		if err := e.mcat.RemoveDatabase(db); err != nil {
@@ -312,6 +362,21 @@ func (e *Engine) DropCollection(db, name string) error {
 		}
 	}
 	return nil
+}
+
+// fireDrop publishes a drop change record for a removed namespace so watchers see
+// the collection go away and invalidate. It orders the event at the current commit
+// version, which is at or above every data event the collection produced. It runs
+// under e.mu, the same lock the drop took.
+func (e *Engine) fireDrop(db, name string) {
+	if e.onChange == nil {
+		return
+	}
+	cv := uint64(0)
+	if e.orc != nil {
+		cv = e.orc.CommitVersion()
+	}
+	e.onChange(db, name, []collection.ChangeRecord{{Op: "drop"}}, cv)
 }
 
 // ListCollections returns the names of every collection in db, sorted.
@@ -348,6 +413,7 @@ func (e *Engine) DropDatabase(db string) error {
 			return err
 		}
 		delete(e.colls, nsKey(rec.DBName, rec.Name))
+		e.fireDrop(rec.DBName, rec.Name)
 	}
 	if e.mcat.GetDatabase(db) != nil {
 		return e.mcat.RemoveDatabase(db)

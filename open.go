@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tamnd/doc/collection"
 	"github.com/tamnd/doc/engine"
 	"github.com/tamnd/doc/pager"
 	"github.com/tamnd/doc/sys"
@@ -45,6 +46,25 @@ type openConfig struct {
 	busyTimeout   time.Duration
 	readOnly      bool
 	ttlInterval   time.Duration
+}
+
+// engineOptions folds the resolved open config into the engine options. It is
+// shared by OpenContext and by Compact, which reopens the file with the same
+// geometry after rewriting it.
+func (cfg openConfig) engineOptions(clock sys.Clock) engine.Options {
+	eopts := engine.Options{
+		Pager: pager.Options{
+			PageSize: uint32(cfg.pageSize),
+			Sync:     pager.SyncLevel(cfg.syncLevel),
+			ReadOnly: cfg.readOnly,
+		},
+		Clock: clock,
+		IDGen: sys.NewObjectIDGenerator(clock),
+	}
+	if cfg.pageSize > 0 && cfg.cacheSize > 0 {
+		eopts.Pager.PoolPages = int(cfg.cacheSize / int64(cfg.pageSize))
+	}
+	return eopts
 }
 
 func defaultOpenConfig() openConfig {
@@ -95,6 +115,8 @@ type DB struct {
 	eng   *engine.Engine
 	clock sys.Clock
 	cfg   openConfig // the resolved open options, read by the PRAGMA surface
+	fs    vfs.FS     // the filesystem the file lives on, reused by Compact
+	path  string     // the file path, reused by Compact to rebuild in place
 
 	mu     sync.RWMutex
 	closed bool
@@ -104,6 +126,8 @@ type DB struct {
 
 	ttlStop chan struct{} // closed to stop the background sweeper
 	ttlDone chan struct{} // closed when the sweeper goroutine has returned
+
+	feed *changeFeed // in-memory change broadcaster, fed by the engine commit path
 }
 
 // Open opens an existing .doc file or creates a new one. The special path
@@ -133,24 +157,17 @@ func OpenContext(ctx context.Context, path string, opts ...Option) (*DB, error) 
 	}
 
 	clock := sys.SystemClock{}
-	eopts := engine.Options{
-		Pager: pager.Options{
-			PageSize: uint32(cfg.pageSize),
-			Sync:     pager.SyncLevel(cfg.syncLevel),
-			ReadOnly: cfg.readOnly,
-		},
-		Clock: clock,
-		IDGen: sys.NewObjectIDGenerator(clock),
-	}
-	if cfg.pageSize > 0 && cfg.cacheSize > 0 {
-		eopts.Pager.PoolPages = int(cfg.cacheSize / int64(cfg.pageSize))
-	}
+	eopts := cfg.engineOptions(clock)
 
 	eng, err := engine.Open(fs, path, eopts)
 	if err != nil {
 		return nil, mapEngineErr(err)
 	}
-	db := &DB{eng: eng, clock: clock, cfg: cfg, defaultIso: isoSnapshot}
+	db := &DB{eng: eng, clock: clock, cfg: cfg, fs: fs, path: path, defaultIso: isoSnapshot}
+	db.feed = newChangeFeed()
+	eng.SetChangeHook(func(dbName, coll string, recs []collection.ChangeRecord, cv uint64) {
+		db.feed.publish(dbName, coll, recs, cv)
+	})
 	if !cfg.readOnly && cfg.ttlInterval > 0 {
 		db.startTTLSweeper(cfg.ttlInterval)
 	}

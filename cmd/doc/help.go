@@ -25,11 +25,14 @@ const dotHelpText = `Dot-commands (meta-operations):
   .dump [dir] [--db <name>] [--collection <c>] [--skip-indexes]
   .load <dir> [--db <name>] [--drop] [--no-indexes]
   .pragma [name[=value]]      read or write an engine setting, or list all
+  .check [full]       verify file, heap, and index integrity (full adds checksums)
+  .compact            rewrite the file, reclaiming space from deleted documents
+  .explain <coll> [filter] [verbosity]   show the query plan for a find
   .begin              begin an explicit transaction
   .commit             commit the current transaction
   .rollback           roll back the current transaction
   .quit               close and exit
-Some commands (.backup, .compact) arrive with a later milestone and
+Some commands (.backup, .restore) arrive with a later milestone and
 report so when called.
 Type .help <cmd> for detail on any command.`
 
@@ -46,4 +49,7 @@ var dotHelpDetail = map[string]string{
 	"dump":        ".dump [dir] [--db <name>] [--collection <c>] [--skip-indexes] - write each collection as a bson stream plus an index sidecar under dir/<db>; - streams jsonl to stdout",
 	"load":        ".load <dir> [--db <name>] [--drop] [--no-indexes] - read a dump directory back, recreating indexes from the sidecars",
 	"pragma":      ".pragma [name[=value]] - with no argument list every engine setting; with a name read it; with name=value write it. Writable: synchronous, default_isolation",
+	"check":       ".check [full] - walk the freelist, heap, and every index, reporting any corruption; full also re-reads every page to verify its checksum. Exits non-zero when a problem is found",
+	"compact":     ".compact - rebuild the file into a fresh, hole-free copy, reclaiming the space held by deleted documents, superseded versions, and forwarding tombstones. Offline: nothing else runs during it",
+	"explain":     ".explain <coll> [filter] [verbosity] - show how the planner would run a find: the chosen plan and the index it picks. Verbosity is queryPlanner (default) or executionStats",
 }

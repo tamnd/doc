@@ -361,6 +361,58 @@ func TestRunSubcommandValidate(t *testing.T) {
 	}
 }
 
+func TestRunSubcommandCheck(t *testing.T) {
+	f := tmpDoc(t)
+	if _, stderr, code := runCLI(t, f, "-e", `db.c.insertMany([{"x":1},{"x":2},{"x":3}])`); code != exitOK {
+		t.Fatalf("seed insert failed: %s", stderr)
+	}
+	out, stderr, code := runCLI(t, f, "check", "full")
+	if code != exitOK {
+		t.Fatalf("check exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(out, "no corruption found") {
+		t.Fatalf("check output unexpected:\n%s", out)
+	}
+}
+
+func TestRunSubcommandCompact(t *testing.T) {
+	f := tmpDoc(t)
+	if _, stderr, code := runCLI(t, f, "-e", `db.c.insertMany([{"_id":1},{"_id":2},{"_id":3}])`); code != exitOK {
+		t.Fatalf("seed insert failed: %s", stderr)
+	}
+	if _, stderr, code := runCLI(t, f, "-e", `db.c.deleteOne({"_id":2})`); code != exitOK {
+		t.Fatalf("seed delete failed: %s", stderr)
+	}
+	if out, stderr, code := runCLI(t, f, "compact"); code != exitOK {
+		t.Fatalf("compact exit = %d, stderr = %s, out = %s", code, stderr, out)
+	}
+	// The two survivors are still there after the rewrite, the deleted one is gone.
+	out, stderr, code := runCLI(t, f, "-e", `db.c.find({})`)
+	if code != exitOK {
+		t.Fatalf("find exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(out, `"_id":1`) || !strings.Contains(out, `"_id":3`) {
+		t.Fatalf("expected survivors 1 and 3 after compact, got:\n%s", out)
+	}
+	if strings.Contains(out, `"_id":2`) {
+		t.Fatalf("deleted document 2 reappeared after compact:\n%s", out)
+	}
+}
+
+func TestDotExplainShowsPlan(t *testing.T) {
+	f := tmpDoc(t)
+	if _, stderr, code := runCLI(t, f, "-e", `db.c.insertOne({"_id":1,"x":1})`); code != exitOK {
+		t.Fatalf("seed failed: %s", stderr)
+	}
+	out, stderr, code := runCLI(t, f, "-e", ".explain c {\"_id\":1}")
+	if code != exitOK {
+		t.Fatalf(".explain exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(out, "queryPlanner") && !strings.Contains(out, "winningPlan") && !strings.Contains(out, "stage") {
+		t.Fatalf(".explain output missing a plan:\n%s", out)
+	}
+}
+
 func TestRunReadOnlyRejectsWrite(t *testing.T) {
 	f := tmpDoc(t)
 	if _, stderr, code := runCLI(t, f, "-e", `db.c.insertOne({"x":1})`); code != exitOK {

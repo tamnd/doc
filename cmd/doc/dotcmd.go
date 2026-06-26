@@ -92,8 +92,14 @@ func (a *app) runDot(line string) error {
 		return a.dotLoad(args)
 	case "pragma":
 		return a.dotPragma(args)
+	case "check", "validate":
+		return a.dotCheck(args)
+	case "compact":
+		return a.dotCompact(args)
+	case "explain":
+		return a.dotExplain(args)
 	case "backup",
-		"restore", "explain", "profile", "validate", "compact",
+		"restore", "profile",
 		"reindex", "vacuum", "pager":
 		return a.dotDeferred(cmd)
 	default:
@@ -421,7 +427,7 @@ func (a *app) endSession() {
 func (a *app) dotDeferred(cmd string) error {
 	return cliError{
 		code: exitUsage,
-		msg:  "." + cmd + " is not available in this build yet (it lands with a later milestone: pragma/validate/compact with M6-e, backup/restore with M7)",
+		msg:  "." + cmd + " is not available in this build yet (backup and restore land with M7)",
 	}
 }
 

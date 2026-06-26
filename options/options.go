@@ -876,3 +876,53 @@ func (o *LoadOptions) SetBypassDocumentValidation(b bool) *LoadOptions {
 	o.BypassDocumentValidation = &b
 	return o
 }
+
+// FullDocument controls whether and how a change stream includes the full document
+// for update events (spec 2061 doc 14 §15.4).
+type FullDocument string
+
+const (
+	// FullDocumentDefault omits fullDocument for updates; inserts and replaces still
+	// carry the post-image.
+	FullDocumentDefault FullDocument = "default"
+	// UpdateLookup fetches the current document and includes it on update events.
+	UpdateLookup FullDocument = "updateLookup"
+	// WhenAvailable includes the full document when it can be found.
+	WhenAvailable FullDocument = "whenAvailable"
+	// Required is WhenAvailable but errors if the document is gone.
+	Required FullDocument = "required"
+)
+
+// ChangeStreamOptions configures a Watch call (spec 2061 doc 14 §15.4). The zero
+// value is a stream from now with default fullDocument behaviour.
+type ChangeStreamOptions struct {
+	FullDocument *FullDocument
+	BatchSize    *int32
+	ResumeAfter  any
+	StartAfter   any
+}
+
+// ChangeStream returns a fresh ChangeStreamOptions builder.
+func ChangeStream() *ChangeStreamOptions { return &ChangeStreamOptions{} }
+
+// SetFullDocument sets the fullDocument mode for update events.
+func (o *ChangeStreamOptions) SetFullDocument(f FullDocument) *ChangeStreamOptions {
+	o.FullDocument = &f
+	return o
+}
+
+// SetBatchSize sets the cursor batch size.
+func (o *ChangeStreamOptions) SetBatchSize(n int32) *ChangeStreamOptions { o.BatchSize = &n; return o }
+
+// SetResumeAfter resumes delivery after the given resume token.
+func (o *ChangeStreamOptions) SetResumeAfter(token any) *ChangeStreamOptions {
+	o.ResumeAfter = token
+	return o
+}
+
+// SetStartAfter starts delivery after the given resume token, including after an
+// invalidate.
+func (o *ChangeStreamOptions) SetStartAfter(token any) *ChangeStreamOptions {
+	o.StartAfter = token
+	return o
+}
