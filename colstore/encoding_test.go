@@ -136,8 +136,8 @@ func TestChooserPicksCompact(t *testing.T) {
 func TestDecodeCorrupt(t *testing.T) {
 	bad := [][]byte{
 		{},
-		{0xff},                   // n only, truncated
-		{0x02, 0x00, 0x09},       // n=2, no bitmap room
+		{0xff},                           // n only, truncated
+		{0x02, 0x00, 0x09},               // n=2, no bitmap room
 		append([]byte{0x03, 0x00}, 0x7f), // unknown tag region
 	}
 	for i, b := range bad {
