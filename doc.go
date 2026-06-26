@@ -21,16 +21,18 @@
 //
 // # API stability
 //
-// As of v1.0.0 the exported library API is stable and follows semantic
-// versioning: no exported name changes meaning or signature within the v1 line.
-// The PRAGMA catalogue and the on-disk file format are stable too; a later format
-// revision stays backward-compatible and opens every file an earlier v1 wrote.
+// doc is pre-1.0. The whole engine is built and tested, but the exported library
+// API is still settling, so a 0.x minor bump may rename or reshape an exported
+// name as the surface is finalized toward 1.0. Pin a version if you depend on it.
+// The on-disk file format is more conservative: it carries its own major and minor
+// version, a build opens any file whose format major it understands, and it rejects
+// a newer major with a clear error rather than misreading it.
 package doc
 
-// Version is the semantic version of the doc module. The library API is frozen at
-// v1 (spec 2061 doc 19 §22); release builds of the doc binary stamp the exact tag
-// over this default through the linker.
-const Version = "1.0.0"
+// Version is the semantic version of the doc module. doc is pre-1.0, so the API may
+// still change across 0.x minor releases; release builds of the doc binary stamp the
+// exact tag over this default through the linker.
+const Version = "0.1.0"
 
 // Magic mirrors the file-format magic prefix bytes "doc\0" for callers that want
 // to sniff a file without importing package format. The authoritative magic is

@@ -3,10 +3,10 @@
 All notable changes to doc are recorded here.
 The format follows Keep a Changelog, and the project follows semantic versioning.
 
-## [1.0.0]
+## [0.1.0]
 
-The first stable release.
-The engine is feature-complete across milestones M0 through M9, the library API is frozen for the 1.x line, the PRAGMA catalogue is stable, and the on-disk format is frozen at major version 1.
+The first public release.
+The engine is feature-complete across milestones M0 through M9. doc is pre-1.0: the library API is still settling toward 1.0, so a 0.x minor release may reshape an exported name. The on-disk format already carries a version and rejects a newer major than the build understands.
 
 ### Added
 
@@ -26,8 +26,8 @@ The engine is feature-complete across milestones M0 through M9, the library API 
 
 ### Stability
 
-- The exported Go API is frozen at v1 under semantic versioning.
-- The PRAGMA catalogue is stable; an unknown PRAGMA is rejected rather than silently accepted.
-- The file format is frozen at major version 1; a file with a newer major version is rejected with a clear error instead of being misread.
+- doc is pre-1.0. The exported Go API is still settling, so a 0.x minor release may rename or reshape an exported name.
+- The PRAGMA catalogue rejects an unknown PRAGMA rather than silently accepting it.
+- The file format records a major and minor version; a file with a newer major version is rejected with a clear error instead of being misread.
 
-[1.0.0]: https://github.com/tamnd/doc/releases/tag/v1.0.0
+[0.1.0]: https://github.com/tamnd/doc/releases/tag/v0.1.0
