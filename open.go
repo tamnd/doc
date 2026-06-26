@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tamnd/doc/collection"
@@ -152,6 +153,8 @@ type DB struct {
 	met  *dbMetrics  // the metric registry, always live (spec 2061 doc 18 §2)
 	log  *slog.Logger
 	prof *profiler // slow-op log and system.profile capture (spec 2061 doc 18 §3)
+
+	archiver atomic.Pointer[WALArchiver] // set while a WAL archiver is running
 }
 
 // Open opens an existing .doc file or creates a new one. The special path
@@ -197,6 +200,9 @@ func OpenContext(ctx context.Context, path string, opts ...Option) (*DB, error) 
 			db.met.changefeedEvt.With(r.Op).Inc()
 		}
 		db.feed.publish(dbName, coll, recs, cv)
+		if a := db.archiver.Load(); a != nil {
+			a.observeVersion(db.eng.DurableLSN(), cv, db.clock.Now().Unix())
+		}
 	})
 	if !cfg.readOnly && cfg.ttlInterval > 0 {
 		db.startTTLSweeper(cfg.ttlInterval)
@@ -244,6 +250,11 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closed = true
+	if a := db.archiver.Load(); a != nil {
+		// Drain any buffered commits to the sink before the engine shuts down.
+		a.stop()
+		db.archiver.Store(nil)
+	}
 	if db.ttlStop != nil {
 		close(db.ttlStop)
 		<-db.ttlDone

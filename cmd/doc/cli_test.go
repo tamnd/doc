@@ -399,6 +399,87 @@ func TestRunSubcommandCompact(t *testing.T) {
 	}
 }
 
+func TestRunSubcommandBackup(t *testing.T) {
+	f := tmpDoc(t)
+	if _, stderr, code := runCLI(t, f, "-e", `db.c.insertMany([{"_id":1},{"_id":2},{"_id":3}])`); code != exitOK {
+		t.Fatalf("seed insert failed: %s", stderr)
+	}
+	out := filepath.Join(t.TempDir(), "out.doc")
+	stdout, stderr, code := runCLI(t, f, "backup", "--out", out, "--verify")
+	if code != exitOK {
+		t.Fatalf("backup exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "ok: backed up") {
+		t.Fatalf("backup output unexpected:\n%s", stdout)
+	}
+
+	// The backup file checks clean and still holds the three documents.
+	if _, cstderr, ccode := runCLI(t, out, "check", "full"); ccode != exitOK {
+		t.Fatalf("check of backup exit = %d, stderr = %s", ccode, cstderr)
+	}
+	fout, fstderr, fcode := runCLI(t, out, "-e", `db.c.find({})`)
+	if fcode != exitOK {
+		t.Fatalf("find in backup exit = %d, stderr = %s", fcode, fstderr)
+	}
+	for _, id := range []string{`"_id":1`, `"_id":2`, `"_id":3`} {
+		if !strings.Contains(fout, id) {
+			t.Fatalf("backup missing %s:\n%s", id, fout)
+		}
+	}
+}
+
+func TestDotBackupRequiresOut(t *testing.T) {
+	f := tmpDoc(t)
+	_, _, code := runCLI(t, f, "-e", ".backup")
+	if code == exitOK {
+		t.Fatal(".backup with no destination should fail")
+	}
+}
+
+// TestRunSubcommandRestoreBase backs up a database, restores its base to a fresh file
+// with the restore subcommand, and confirms the restored file checks clean and holds
+// the documents.
+func TestRunSubcommandRestoreBase(t *testing.T) {
+	f := tmpDoc(t)
+	if _, stderr, code := runCLI(t, f, "-e", `db.c.insertMany([{"_id":1},{"_id":2},{"_id":3}])`); code != exitOK {
+		t.Fatalf("seed insert failed: %s", stderr)
+	}
+	base := filepath.Join(t.TempDir(), "base.doc")
+	if _, stderr, code := runCLI(t, f, "backup", "--out", base); code != exitOK {
+		t.Fatalf("backup exit = %d, stderr = %s", code, stderr)
+	}
+
+	out := filepath.Join(t.TempDir(), "restored.doc")
+	stdout, stderr, code := runCLI(t, "restore", "--base", base, "--out", out)
+	if code != exitOK {
+		t.Fatalf("restore exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "ok: restored base") {
+		t.Fatalf("restore output unexpected:\n%s", stdout)
+	}
+	if _, cstderr, ccode := runCLI(t, out, "check", "full"); ccode != exitOK {
+		t.Fatalf("check of restored exit = %d, stderr = %s", ccode, cstderr)
+	}
+	fout, fstderr, fcode := runCLI(t, out, "-e", `db.c.find({})`)
+	if fcode != exitOK {
+		t.Fatalf("find in restored exit = %d, stderr = %s", fcode, fstderr)
+	}
+	for _, id := range []string{`"_id":1`, `"_id":2`, `"_id":3`} {
+		if !strings.Contains(fout, id) {
+			t.Fatalf("restored missing %s:\n%s", id, fout)
+		}
+	}
+}
+
+func TestRunSubcommandRestoreNeedsArgs(t *testing.T) {
+	if _, _, code := runCLI(t, "restore"); code == exitOK {
+		t.Fatal("restore with no flags should fail")
+	}
+	if _, _, code := runCLI(t, "restore", "--base", "nowhere.doc"); code == exitOK {
+		t.Fatal("restore --base without --out should fail")
+	}
+}
+
 func TestDotExplainShowsPlan(t *testing.T) {
 	f := tmpDoc(t)
 	if _, stderr, code := runCLI(t, f, "-e", `db.c.insertOne({"_id":1,"x":1})`); code != exitOK {
