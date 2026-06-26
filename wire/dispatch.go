@@ -63,17 +63,6 @@ func (c *conn) dispatch(ctx context.Context, in *opMsgIn) bson.Raw {
 	return raw
 }
 
-// dispatchData is the hook the data-path commands (find, insert, getMore, ...) plug
-// into. M8-a implements none of them, so it always reports not-handled and the command
-// falls through to RunCommand. M8-b fills this in.
-func (c *conn) dispatchData(ctx context.Context, dbName, name string, in *opMsgIn) (bson.Raw, bool) {
-	_ = ctx
-	_ = dbName
-	_ = name
-	_ = in
-	return nil, false
-}
-
 // commandContext derives the per-command context, honoring a maxTimeMS deadline if the
 // command carries one (spec 2061 doc 16 §4.4).
 func (c *conn) commandContext(ctx context.Context, body bson.Raw) (context.Context, context.CancelFunc) {
@@ -109,11 +98,36 @@ func (c *conn) buildHello(req bson.Raw) bson.Raw {
 		AppendInt32("minWireVersion", 0).
 		AppendInt32("maxWireVersion", maxWireVersion).
 		AppendBoolean("readOnly", c.srv.opts.ReadOnly).
-		AppendArray("compression", bson.Empty)
+		AppendArray("compression", c.negotiateCompression(req))
 
 	c.appendAuthMechs(b)
 	b.AppendDouble("ok", 1)
 	return b.Build()
+}
+
+// negotiateCompression reads the client's offered compressor names from hello, picks the
+// one doc supports, and returns the array to advertise back. The chosen compressor is
+// staged as pending so it activates only after this hello reply is written (spec 2061
+// doc 16 §11.2). Re-running hello on the same connection does not downgrade an already
+// active compressor.
+func (c *conn) negotiateCompression(req bson.Raw) bson.Raw {
+	var offered []string
+	if v, ok := req.Lookup("compression"); ok && v.Type == bson.TypeArray {
+		for _, e := range arrayElements(v) {
+			if e.Type == bson.TypeString {
+				offered = append(offered, e.StringValue())
+			}
+		}
+	}
+	id, names := negotiateCompressor(offered)
+	if id != compressorNoop && c.compressor == compressorNoop {
+		c.pendingCompressor = id
+	}
+	vals := make([]bson.RawValue, len(names))
+	for i, n := range names {
+		vals[i] = bson.RawValue{Type: bson.TypeString, Data: encodeString(n)}
+	}
+	return bson.BuildArray(vals...)
 }
 
 // recordClientMeta captures the driver-supplied client document once, for logging.

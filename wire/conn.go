@@ -21,6 +21,12 @@ type conn struct {
 
 	// clientMeta is the driver-supplied client document from hello, logged once.
 	clientMeta string
+
+	// compressor is the active outbound compressor id (compressorNoop when none was
+	// negotiated). pendingCompressor holds the negotiated id until the hello reply that
+	// negotiated it has been written, so that reply itself goes out uncompressed.
+	compressor        byte
+	pendingCompressor byte
 }
 
 // conn0Server is the slice of Server a conn needs. It is an alias so server.go and
@@ -50,12 +56,21 @@ func (c *conn) serve(ctx context.Context) {
 		}
 		reply, keepGoing := c.handle(ctx, msg)
 		if reply != nil {
+			if c.compressor != compressorNoop && len(reply) > compressThreshold {
+				reply = wrapCompressed(reply, c.compressor)
+			}
 			if _, err := bw.Write(reply); err != nil {
 				return
 			}
 			if err := bw.Flush(); err != nil {
 				return
 			}
+		}
+		// A hello that negotiated compression activates it only now, after its own reply
+		// has gone out uncompressed.
+		if c.pendingCompressor != compressorNoop {
+			c.compressor = c.pendingCompressor
+			c.pendingCompressor = compressorNoop
 		}
 		if !keepGoing {
 			return
@@ -81,9 +96,17 @@ func (c *conn) handle(ctx context.Context, msg *rawMessage) (reply []byte, keepG
 	case opQuery:
 		return c.handleLegacyQuery(msg)
 	case opCompressed:
-		// Compression is negotiated through hello; the server advertises none in M8-a,
-		// so a well-behaved driver never sends OP_COMPRESSED. Decline it clearly.
-		return c.protocolErrorReply(msg.header.RequestID, errors.New("OP_COMPRESSED not negotiated")), false
+		// Unwrap the compressed envelope and dispatch the inner message. The reply is
+		// compressed back on the way out by the serve loop when a compressor is active.
+		origOp, inner, err := parseOpCompressed(msg.payload, c.srv.opts.MaxMessageBytes)
+		if err != nil {
+			return c.protocolErrorReply(msg.header.RequestID, err), false
+		}
+		innerMsg := &rawMessage{
+			header:  header{RequestID: msg.header.RequestID, ResponseTo: msg.header.ResponseTo, OpCode: origOp},
+			payload: inner,
+		}
+		return c.handle(ctx, innerMsg)
 	default:
 		// Legacy opcodes (OP_INSERT, OP_UPDATE, OP_GET_MORE, ...) are not supported.
 		return c.protocolErrorReply(msg.header.RequestID, errors.New("unexpected legacy opcode")), false
