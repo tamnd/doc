@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+name: nightly
+
+# The soak and the docbench gate are too slow and too hardware-sensitive to run on
+# every PR, so they run on a schedule and can be kicked off by hand. Absolute bench
+# numbers depend on the runner, so the gate here is a coarse guard against large
+# regressions; the authoritative gate runs on the reference host (spec 2061 doc 19).
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      soak_duration:
+        description: 'soak duration (e.g. 30m, 2h, 8h)'
+        default: '30m'
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: soak
+    runs-on: ubuntu-latest
+    # Hosted runners cap at 6 hours, so the scheduled run uses a bounded window. Run
+    # the full 8 hours on dedicated hardware with workflow_dispatch + a longer input.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: build docsoak
+        run: go build ./cmd/docsoak
+      - name: run soak
+        run: |
+          dur="${{ github.event.inputs.soak_duration }}"
+          dur="${dur:-30m}"
+          go run ./cmd/docsoak -duration "$dur" -interval 5m -readers 64 -writers 16
+
+  bench-gate:
+    name: docbench regression gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+      # The baseline in the repo was captured on a reference host. On a hosted runner
+      # the absolute numbers differ, so a failure here is a signal to inspect, not an
+      # automatic block. continue-on-error keeps the schedule green while still surfacing
+      # the comparison in the run log.
+      - name: run gate
+        continue-on-error: true
+        run: go run ./cmd/docbench -baseline bench/baselines/reference.json

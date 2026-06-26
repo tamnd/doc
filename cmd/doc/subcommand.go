@@ -64,7 +64,7 @@ func (a *app) runSubcommand() int {
 	case "reindex":
 		return reportTop(a.dotDeferred(a.cfg.subcommand))
 	case "serve":
-		return reportTop(cliError{code: exitUsage, msg: "doc serve arrives with the wire server in M8"})
+		return a.subServe()
 	default:
 		return reportTop(usageErr("unknown subcommand: " + a.cfg.subcommand))
 	}

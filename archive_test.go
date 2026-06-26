@@ -4,8 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"time"
 	"testing"
+	"time"
 )
 
 // memSink is an in-memory WALSink for tests.
