@@ -92,21 +92,15 @@ func EncodeBool(b bool) storage.IndexKey {
 func EncodeNull() storage.IndexKey { return storage.IndexKey{tagNull} }
 
 // EncodeString encodes a string key under the default binary collation (spec 2061
-// doc 07 §3.5): the raw UTF-8 bytes with internal NULs escaped as 0x00 0x01 and a
-// 0x00 terminator separating the key from the trailing RID. Named collations are
-// a later milestone.
+// doc 07 §3.5): the raw UTF-8 bytes with internal NULs escaped as 0x00 0xFF and a
+// 0x00 0x01 terminator separating the key from the trailing RID. The two-byte
+// terminator stays distinct from an escaped NUL so no key is a byte-prefix of
+// another, which a descending field relies on to reverse order by inverting bytes.
+// Named collations are a later milestone.
 func EncodeString(s string) storage.IndexKey {
-	k := make(storage.IndexKey, 0, len(s)+2)
+	k := make(storage.IndexKey, 0, len(s)+3)
 	k = append(k, tagString)
-	for i := 0; i < len(s); i++ {
-		if s[i] == 0x00 {
-			k = append(k, 0x00, 0x01)
-		} else {
-			k = append(k, s[i])
-		}
-	}
-	k = append(k, 0x00)
-	return k
+	return storage.IndexKey(appendOrderedBytes(k, s))
 }
 
 // EncodeMinKey and EncodeMaxKey encode the internal sentinels that sort below and

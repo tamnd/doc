@@ -231,6 +231,13 @@ func validateDoc(b []byte, depth int) error {
 	}
 	off := 4
 	for {
+		// A prior element's declared length can swallow the byte that should hold
+		// the terminator, landing off at or past len(b). Guard before the read so a
+		// truncated frame returns an error instead of reading out of bounds. This
+		// mirrors the same guard in Elements and Lookup (spec 2061 doc 02 §11.1).
+		if off >= len(b) {
+			return ErrMalformed
+		}
 		t := Type(b[off])
 		if t == 0x00 {
 			if off != len(b)-1 {

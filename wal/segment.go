@@ -88,6 +88,24 @@ func (s *Segment) Encode() []byte {
 	return append(hdr, body...)
 }
 
+// clampCount bounds a length-prefixed count from an untrusted segment to the most
+// elements the remaining bytes could possibly hold, where minPer is the smallest
+// byte size one element occupies. It keeps a corrupt count field from driving a
+// huge preallocation before the per-element bounds checks reject the segment.
+func clampCount(count uint32, remaining, minPer int) int {
+	if remaining < 0 {
+		return 0
+	}
+	max := remaining
+	if minPer > 0 {
+		max = remaining / minPer
+	}
+	if int64(count) > int64(max) {
+		return max
+	}
+	return int(count)
+}
+
 // DecodeSegment parses a segment, verifying the header and every commit checksum.
 func DecodeSegment(b []byte) (*Segment, error) {
 	if len(b) < segHeaderSize {
@@ -115,7 +133,12 @@ func DecodeSegment(b []byte) (*Segment, error) {
 	}
 
 	off := segHeaderSize
-	s.Commits = make([]Commit, 0, commitCount)
+	// A commit occupies at least its 24-byte header and 4-byte checksum, so the
+	// buffer cannot hold more than (remaining / 28) commits. Clamp the preallocation
+	// to that before trusting the count field: a corrupt count of four billion would
+	// otherwise drive a multi-gigabyte make before the per-commit bounds check below
+	// ever rejects it (spec 2061 doc 18 §14, defensive decode).
+	s.Commits = make([]Commit, 0, clampCount(commitCount, len(b)-off, 28))
 	for i := uint32(0); i < commitCount; i++ {
 		start := off
 		if off+24 > len(b) {
@@ -128,7 +151,9 @@ func DecodeSegment(b []byte) (*Segment, error) {
 		}
 		frameCount := binary.LittleEndian.Uint32(b[off+20 : off+24])
 		off += 24
-		c.Frames = make([]PageImage, 0, frameCount)
+		// Each frame is at least 8 bytes of page id plus one page of payload, so the
+		// remaining buffer bounds the frame count the same way (defensive decode).
+		c.Frames = make([]PageImage, 0, clampCount(frameCount, len(b)-off, 8+int(s.PageSize)))
 		for f := uint32(0); f < frameCount; f++ {
 			if off+8+int(s.PageSize) > len(b) {
 				return nil, fmt.Errorf("%w: truncated frame in commit %d", ErrBadSegment, i)
@@ -149,6 +174,13 @@ func DecodeSegment(b []byte) (*Segment, error) {
 		}
 		off += 4
 		s.Commits = append(s.Commits, c)
+	}
+	// A well-formed segment ends exactly at its last commit's checksum. Trailing
+	// bytes mean the segment was truncated mid-append or corrupted, so reject them
+	// rather than silently ignore a tail a restore never wrote (spec 2061 doc 18
+	// §14). This also keeps decode the exact inverse of Encode.
+	if off != len(b) {
+		return nil, fmt.Errorf("%w: %d trailing bytes after last commit", ErrBadSegment, len(b)-off)
 	}
 	return s, nil
 }
