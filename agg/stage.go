@@ -3,6 +3,7 @@ package agg
 import (
 	"errors"
 	"io"
+	"math"
 
 	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/query"
@@ -559,7 +560,15 @@ func (s *countSrc) next() (bson.Raw, error) {
 		}
 		n++
 	}
-	return bson.NewBuilder().AppendInt64(s.field, n).Build(), nil
+	// MongoDB emits the count as a 32-bit integer when it fits, widening to 64-bit only past
+	// that range. Match it so a driver decodes the same type it would against mongod.
+	b := bson.NewBuilder()
+	if n <= math.MaxInt32 {
+		b.AppendInt32(s.field, int32(n))
+	} else {
+		b.AppendInt64(s.field, n)
+	}
+	return b.Build(), nil
 }
 
 // ---- $unwind -------------------------------------------------------------

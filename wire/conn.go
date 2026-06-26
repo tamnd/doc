@@ -7,7 +7,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/tamnd/doc/bson"
 )
@@ -64,9 +66,13 @@ func (c *conn) serve(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Arm the idle timeout before each read. A connection inside an open transaction is
+		// exempt: the transaction lifetime governs it instead (spec 2061 doc 16 §15.4).
+		c.armIdleDeadline()
 		msg, err := readMessage(br, c.srv.opts.MaxMessageBytes)
 		if err != nil {
-			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !isClosedConnErr(err) {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) &&
+				!errors.Is(err, os.ErrDeadlineExceeded) && !isClosedConnErr(err) {
 				c.srv.opts.Logger.Debug("wire read ended", "connectionId", c.id, "err", err)
 			}
 			return
@@ -93,6 +99,18 @@ func (c *conn) serve(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// armIdleDeadline sets the read deadline to the idle timeout, or clears it when the idle
+// timeout is disabled or the connection holds an open transaction. The transaction case is
+// exempt so a long-running transaction is not cut off mid-flight (spec 2061 doc 16 §15.4).
+func (c *conn) armIdleDeadline() {
+	idle := c.srv.opts.MaxConnIdle
+	if idle > 0 && !c.hasOpenTxn() {
+		_ = c.nc.SetReadDeadline(time.Now().Add(idle))
+		return
+	}
+	_ = c.nc.SetReadDeadline(time.Time{})
 }
 
 // handle dispatches one framed message and returns the bytes to write back (nil for a

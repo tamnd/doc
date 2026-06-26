@@ -143,8 +143,9 @@ func TestLimitSkipCount(t *testing.T) {
 	if len(cnt) != 1 {
 		t.Fatalf("count produced %d docs", len(cnt))
 	}
-	if v, _ := cnt[0].Lookup("total"); v.Int64() != 4 {
-		t.Fatalf("count total = %d, want 4", v.Int64())
+	// $count emits a 32-bit integer when the value fits, matching MongoDB.
+	if got := field32(cnt[0], "total"); got != 4 {
+		t.Fatalf("count total = %d, want 4", got)
 	}
 }
 

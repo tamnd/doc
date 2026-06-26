@@ -35,6 +35,8 @@ var boolFlags = map[string]bool{
 	"all-databases": true, "no-indexes": true, "restore-indexes": true,
 	"stop-on-error": true, "verify": true, "apply-wal": true, "pprof": true,
 	"data": true,
+	// serve switches
+	"tls": true, "auth": true, "readonly": true, "http": true,
 }
 
 // parseFlags splits already-tokenized arguments into positionals, --key value pairs,

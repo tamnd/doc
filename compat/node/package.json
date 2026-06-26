@@ -1,0 +1,13 @@
+{
+  "name": "doc-compat-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js mongodb driver compatibility suite for doc serve",
+  "type": "module",
+  "scripts": {
+    "test": "node run_compat.mjs"
+  },
+  "dependencies": {
+    "mongodb": "^7.4.0"
+  }
+}

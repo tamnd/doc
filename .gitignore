@@ -10,5 +10,11 @@ coverage.out
 *.doc-wal
 *.doc-shm
 
+# Compat suite local installs
+/compat/node/node_modules/
+/compat/node/package-lock.json
+/compat/python/.venv/
+/compat/**/__pycache__/
+
 # Editor / OS
 .DS_Store
