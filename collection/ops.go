@@ -28,6 +28,10 @@ type Txn struct {
 	done       bool
 	committedV uint64 // commit version assigned at Commit, 0 until a write commit succeeds
 
+	// bypassValidation suppresses validator enforcement for the writes in this
+	// transaction (MongoDB's bypassDocumentValidation, spec 2061 doc 09 §10.5).
+	bypassValidation bool
+
 	pending      map[string]*pendingOp // overlay key -> buffered write
 	order        []string              // pending keys in write order
 	insertedRIDs map[string]storage.RID
@@ -131,6 +135,9 @@ func (t *Txn) DeleteOne(filter bson.Raw) (int64, error) {
 	if !t.writable {
 		return 0, storage.ErrReadOnly
 	}
+	if t.c.policy().Capped {
+		return 0, ErrCappedDelete
+	}
 	key, doc, err := t.findMatch(filter)
 	if err != nil {
 		return 0, err
@@ -150,6 +157,9 @@ func (t *Txn) DeleteMany(filter bson.Raw) (int64, error) {
 	}
 	if !t.writable {
 		return 0, storage.ErrReadOnly
+	}
+	if t.c.policy().Capped {
+		return 0, ErrCappedDelete
 	}
 	m, err := compileFilter(filter)
 	if err != nil {
@@ -395,6 +405,19 @@ func (t *Txn) conflictKeys() []uint64 {
 // (no per-transaction rollback yet), so a durable apply must be all-or-nothing in
 // practice; on the fault-free conformance path it always completes.
 func (t *Txn) durable(cv uint64) error {
+	if err := t.apply(cv); err != nil {
+		return err
+	}
+	return t.c.pgr.Commit()
+}
+
+// apply writes the transaction's buffered mutations into the heap and indexes
+// stamped with cv, stages any dirty catalog state, but does not drive the pager
+// commit. The single-collection durable path commits the pager immediately after;
+// a multi-collection transaction applies every participant and then commits the
+// shared pager once, so all collections become durable in one group commit (spec
+// 2061 doc 06 §7.5, doc 14 §14).
+func (t *Txn) apply(cv uint64) error {
 	wt := writeTxn{version: cv}
 	t.insertedRIDs = make(map[string]storage.RID)
 	// Pre-check unique secondary indexes against the live committed state before any
@@ -443,7 +466,7 @@ func (t *Txn) durable(cv uint64) error {
 		}
 		t.c.idRootDirty = false
 	}
-	return t.c.pgr.Commit()
+	return nil
 }
 
 // publish installs the transaction's new versions at the head of each overlay

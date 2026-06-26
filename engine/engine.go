@@ -15,12 +15,15 @@ package engine
 import (
 	"errors"
 	"sync"
+	"time"
 
+	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/catalog"
 	"github.com/tamnd/doc/collection"
 	"github.com/tamnd/doc/format"
 	"github.com/tamnd/doc/mvcc"
 	"github.com/tamnd/doc/pager"
+	"github.com/tamnd/doc/schema"
 	"github.com/tamnd/doc/sys"
 	"github.com/tamnd/doc/vfs"
 )
@@ -111,9 +114,10 @@ func Open(fs vfs.FS, path string, opts Options) (*Engine, error) {
 }
 
 // openCollection builds a collection.Collection over the shared pager for a catalog
-// record, wiring the _id index root and its persistence back through the record.
+// record, wiring the _id index root and its persistence back through the record and
+// installing the collection's write policy (validator and capped bounds).
 func (e *Engine) openCollection(rec *catalog.CollectionRecord) (*collection.Collection, uint64, error) {
-	return collection.NewWithDeps(collection.Deps{
+	c, mv, err := collection.NewWithDeps(collection.Deps{
 		Pager:                  e.pgr,
 		Clock:                  e.clk,
 		IDGen:                  e.gen,
@@ -124,6 +128,32 @@ func (e *Engine) openCollection(rec *catalog.CollectionRecord) (*collection.Coll
 		OnIDIndexRoot:          func(root uint32) { rec.IDIndexRoot = root },
 		PersistCatalog:         func() error { return e.mcat.StageCollection(rec) },
 	})
+	if err != nil {
+		return nil, 0, err
+	}
+	pol, err := policyFromRecord(rec)
+	if err != nil {
+		return nil, 0, err
+	}
+	c.SetPolicy(pol)
+	return c, mv, nil
+}
+
+// policyFromRecord compiles the catalog record's validator and reads its capped
+// bounds into a collection write policy (spec 2061 doc 09 §10, doc 04 §11.2).
+func policyFromRecord(rec *catalog.CollectionRecord) (collection.Policy, error) {
+	v, err := schema.Compile(rec.Validator)
+	if err != nil {
+		return collection.Policy{}, err
+	}
+	return collection.Policy{
+		Validator:        v,
+		ValidationLevel:  rec.ValidationLevel,
+		ValidationAction: rec.ValidationAction,
+		Capped:           rec.Kind == catalog.KindCapped,
+		CappedMaxDocs:    rec.Options.MaxDocs,
+		CappedMaxBytes:   rec.Options.SizeBytes,
+	}, nil
 }
 
 // uuid mints a stable 16-byte identifier for a new database or collection from the
@@ -152,21 +182,49 @@ func validName(s string) bool {
 	return true
 }
 
+// CreateSpec carries the options for creating a collection with a kind, a validator,
+// or capped bounds (spec 2061 doc 09 §8.2, §10). The zero value creates a regular,
+// unvalidated, uncapped collection, so CreateCollection is CreateCollectionWith with
+// the zero spec.
+type CreateSpec struct {
+	Capped           bool
+	SizeBytes        int64
+	MaxDocs          int64
+	Validator        bson.Raw
+	ValidationLevel  catalog.ValidationLevel
+	ValidationAction catalog.ValidationAction
+}
+
 // CreateCollection creates a regular collection in db, creating the database record
 // if this is its first collection. It is one WAL transaction (spec 2061 doc 09 §8.2)
 // and returns ErrNamespaceExists if the collection already exists.
 func (e *Engine) CreateCollection(db, name string) (*collection.Collection, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.createLocked(db, name)
+	return e.createLocked(db, name, CreateSpec{})
 }
 
-func (e *Engine) createLocked(db, name string) (*collection.Collection, error) {
+// CreateCollectionWith creates a collection with explicit options: a validator with
+// its level and action, or capped bounds (spec 2061 doc 09 §8.2). It rejects a
+// validator that does not compile so the failure surfaces at create time rather than
+// on the first write.
+func (e *Engine) CreateCollectionWith(db, name string, spec CreateSpec) (*collection.Collection, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.createLocked(db, name, spec)
+}
+
+func (e *Engine) createLocked(db, name string, spec CreateSpec) (*collection.Collection, error) {
 	if !validName(db) || !validName(name) {
 		return nil, ErrInvalidName
 	}
 	if e.mcat.GetCollection(db, name) != nil {
 		return nil, ErrNamespaceExists
+	}
+	if len(spec.Validator) > 0 {
+		if _, err := schema.Compile(spec.Validator); err != nil {
+			return nil, err
+		}
 	}
 	if e.mcat.GetDatabase(db) == nil {
 		if err := e.mcat.PutDatabase(&catalog.DatabaseRecord{
@@ -178,15 +236,26 @@ func (e *Engine) createLocked(db, name string) (*collection.Collection, error) {
 		}
 	}
 	now := e.nowMillis()
+	kind := catalog.KindRegular
+	if spec.Capped {
+		kind = catalog.KindCapped
+	}
 	rec := &catalog.CollectionRecord{
-		DBName:      db,
-		Name:        name,
-		UUID:        e.uuid(),
-		Kind:        catalog.KindRegular,
-		CreatedAt:   now,
-		ModifiedAt:  now,
-		CollID:      e.nextCollID,
-		IDIndexRoot: format.NullPage,
+		DBName:           db,
+		Name:             name,
+		UUID:             e.uuid(),
+		Kind:             kind,
+		CreatedAt:        now,
+		ModifiedAt:       now,
+		CollID:           e.nextCollID,
+		IDIndexRoot:      format.NullPage,
+		Validator:        spec.Validator,
+		ValidationLevel:  spec.ValidationLevel,
+		ValidationAction: spec.ValidationAction,
+		Options: catalog.CollectionOptions{
+			SizeBytes: spec.SizeBytes,
+			MaxDocs:   spec.MaxDocs,
+		},
 	}
 	e.nextCollID += catalog.CollIDStride
 	if err := e.mcat.StageCollection(rec); err != nil {
@@ -220,7 +289,7 @@ func (e *Engine) EnsureCollection(db, name string) (*collection.Collection, erro
 	if c := e.colls[nsKey(db, name)]; c != nil {
 		return c, nil
 	}
-	return e.createLocked(db, name)
+	return e.createLocked(db, name, CreateSpec{})
 }
 
 // DropCollection removes db.name from the catalog (spec 2061 doc 09 §8.3). The
@@ -289,6 +358,34 @@ func (e *Engine) DropDatabase(db string) error {
 // Oracle exposes the shared MVCC oracle for cross-collection transaction wiring in
 // the public layer (spec 2061 doc 14 §sessions).
 func (e *Engine) Oracle() *mvcc.Oracle { return e.orc }
+
+// Begin opens a multi-collection transaction over the shared oracle and pager. The
+// public session layer drives it: every collection touched through the returned
+// MultiTxn reads one snapshot and commits together (spec 2061 doc 14 §14).
+func (e *Engine) Begin(iso collection.IsolationLevel) *collection.MultiTxn {
+	return collection.NewMultiTxn(e.orc, e.pgr, iso)
+}
+
+// SweepTTL runs one TTL expiry pass across every open collection and returns the
+// total number of documents deleted (spec 2061 doc 04 §11.4). The DB layer calls it
+// on a background ticker; tests call it directly with a controlled clock.
+func (e *Engine) SweepTTL(now time.Time) (int, error) {
+	e.mu.Lock()
+	colls := make([]*collection.Collection, 0, len(e.colls))
+	for _, c := range e.colls {
+		colls = append(colls, c)
+	}
+	e.mu.Unlock()
+	total := 0
+	for _, c := range colls {
+		n, err := c.SweepTTL(now)
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
 
 // Close flushes and closes the shared pager, releasing the whole file.
 func (e *Engine) Close() error { return e.pgr.Close() }
