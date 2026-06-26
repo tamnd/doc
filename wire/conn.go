@@ -3,6 +3,7 @@ package wire
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -149,6 +150,16 @@ func (c *conn) isLoopback() bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// tlsState returns the completed TLS handshake state when the connection runs over TLS.
+// X.509 authentication reads the verified peer certificate from it. By the time a SASL
+// command arrives the handshake has already run, so the state is populated.
+func (c *conn) tlsState() (tls.ConnectionState, bool) {
+	if tc, ok := c.nc.(*tls.Conn); ok {
+		return tc.ConnectionState(), true
+	}
+	return tls.ConnectionState{}, false
 }
 
 // nextConvID hands out the next SASL conversation id for this connection.

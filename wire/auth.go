@@ -17,14 +17,17 @@ func (s *Server) authConfigured() bool { return s.opts.AuthRequired }
 
 // appendAuthMechs advertises the supported SASL mechanisms in the hello response, but only
 // when auth is configured. A driver reads this to pick a mechanism before it sends
-// credentials. X.509 is advertised alongside SCRAM once a TLS client CA is configured,
-// which arrives with TLS in M8-d.
+// credentials. X.509 is advertised alongside SCRAM once a TLS client CA is configured, so a
+// driver connecting with a client certificate knows it may authenticate without a password.
 func (c *conn) appendAuthMechs(b *bson.Builder) {
 	if !c.srv.authConfigured() {
 		return
 	}
-	mechs := bson.BuildArray(bson.RawValue{Type: bson.TypeString, Data: encodeString(scramMechName)})
-	b.AppendArray("saslSupportedMechs", mechs)
+	mechVals := []bson.RawValue{{Type: bson.TypeString, Data: encodeString(scramMechName)}}
+	if c.x509Available() {
+		mechVals = append(mechVals, bson.RawValue{Type: bson.TypeString, Data: encodeString(x509MechName)})
+	}
+	b.AppendArray("saslSupportedMechs", bson.BuildArray(mechVals...))
 }
 
 // appendSpeculative answers an embedded speculativeAuthenticate in hello: the driver folds
@@ -54,14 +57,20 @@ func (c *conn) appendSpeculative(b *bson.Builder, req bson.Raw) {
 	b.AppendDocument("speculativeAuthenticate", reply)
 }
 
-// handleSaslStart begins a SASL conversation. Only SCRAM-SHA-256 is offered, so any other
-// mechanism is rejected before the credential store is touched.
+// handleSaslStart begins a SASL conversation. SCRAM-SHA-256 runs its challenge exchange;
+// MONGODB-X509 finishes in this single step off the TLS certificate. Any other mechanism is
+// rejected before the credential store is touched.
 func (c *conn) handleSaslStart(ctx context.Context, db string, body bson.Raw) bson.Raw {
-	if mech := lookupString(body, "mechanism"); mech != scramMechName {
-		return errorDoc(2, "BadValue", "unsupported authentication mechanism "+mech)
+	switch lookupString(body, "mechanism") {
+	case scramMechName:
+		reply, _ := c.scramStep1(ctx, db, binaryPayload(body, "payload"))
+		return reply
+	case x509MechName:
+		return c.handleX509(ctx, body)
+	default:
+		return errorDoc(2, "BadValue",
+			"unsupported authentication mechanism "+lookupString(body, "mechanism"))
 	}
-	reply, _ := c.scramStep1(ctx, db, binaryPayload(body, "payload"))
-	return reply
 }
 
 // scramStep1 parses the client-first message, looks up the user, and emits the server-first

@@ -110,6 +110,19 @@ func userDoc(db, user string, cred scramCredential, roles []roleRef) bson.Raw {
 		Build()
 }
 
+// externalUserDoc builds a stored user document for an external (certificate or token)
+// account. It has no credentials sub-document because the mechanism, not a stored secret,
+// authenticates it.
+func externalUserDoc(db, user string, roles []roleRef) bson.Raw {
+	return bson.NewBuilder().
+		AppendString("_id", userID(db, user)).
+		AppendObjectID("userId", doc.NewObjectID()).
+		AppendString("user", user).
+		AppendString("db", db).
+		AppendArray("roles", rolesArray(roles)).
+		Build()
+}
+
 // dispatchUsers handles the user-management commands. It returns (reply, true) for a
 // command it owns and (nil, false) otherwise so dispatch falls through to the data and
 // configuration surfaces.
@@ -143,18 +156,30 @@ func (c *conn) handleCreateUser(ctx context.Context, db string, body bson.Raw) b
 	if user == "" {
 		return errorDoc(2, "BadValue", "createUser requires a user name")
 	}
-	if pwd == "" {
-		return errorDoc(2, "BadValue", "createUser requires a password")
-	}
 	var roles []roleRef
 	if v, ok := body.Lookup("roles"); ok {
 		roles = parseRoles(v, db)
 	}
-	cred, err := newCredential(pwd)
-	if err != nil {
-		return errorDoc(1, "InternalError", "deriving credential: "+err.Error())
+	// External users (X.509 and other certificate or token mechanisms) live under $external
+	// and carry no password credential: the TLS handshake authenticates them. Everyone else
+	// needs a password to derive a SCRAM credential from.
+	var stored bson.Raw
+	if db == externalDB {
+		if pwd != "" {
+			return errorDoc(2, "BadValue", "external users must not have a password")
+		}
+		stored = externalUserDoc(db, user, roles)
+	} else {
+		if pwd == "" {
+			return errorDoc(2, "BadValue", "createUser requires a password")
+		}
+		cred, err := newCredential(pwd)
+		if err != nil {
+			return errorDoc(1, "InternalError", "deriving credential: "+err.Error())
+		}
+		stored = userDoc(db, user, cred, roles)
 	}
-	if _, err := c.usersCollection().InsertOne(ctx, userDoc(db, user, cred, roles)); err != nil {
+	if _, err := c.usersCollection().InsertOne(ctx, stored); err != nil {
 		if isDuplicateKey(err) {
 			return errorDoc(51003, "Location51003", "User \""+user+"@"+db+"\" already exists")
 		}
