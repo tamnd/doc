@@ -27,25 +27,42 @@ func (c *conn) dispatch(ctx context.Context, in *opMsgIn) bson.Raw {
 		return errorDoc(9, "FailedToParse", "empty command document")
 	}
 
-	switch name {
-	case "hello", "ismaster":
-		return c.buildHello(in.body)
-	case "ping":
-		return okReply()
-	case "saslstart", "saslcontinue", "logout":
-		// Authentication arrives in M8-c. With no auth configured the server has no
-		// credentials to check against, so it reports the mechanism as unsupported
-		// rather than pretending to authenticate.
-		return errorDoc(59, "CommandNotFound", "authentication is not configured on this server")
-	}
-
 	dbName := lookupString(in.body, "$db")
 	if dbName == "" {
 		dbName = "admin"
 	}
 
+	switch name {
+	case "hello", "ismaster":
+		return c.buildHello(in.body)
+	case "ping":
+		return okReply()
+	case "saslstart":
+		if !c.srv.authConfigured() {
+			return errorDoc(59, "CommandNotFound", "authentication is not configured on this server")
+		}
+		return c.handleSaslStart(ctx, dbName, in.body)
+	case "saslcontinue":
+		if !c.srv.authConfigured() {
+			return errorDoc(59, "CommandNotFound", "authentication is not configured on this server")
+		}
+		return c.handleSaslContinue(ctx, in.body)
+	case "logout":
+		return c.handleLogout()
+	}
+
 	ctx, cancel := c.commandContext(ctx, in.body)
 	defer cancel()
+
+	// Every remaining command passes the authorization gate before it is routed (spec
+	// 2061 doc 16 §19).
+	if deny := c.authorize(ctx, dbName, name); deny != nil {
+		return deny
+	}
+
+	if reply, handled := c.dispatchUsers(ctx, dbName, name, in.body); handled {
+		return reply
+	}
 
 	if reply, handled := c.dispatchData(ctx, dbName, name, in); handled {
 		return reply
@@ -61,17 +78,6 @@ func (c *conn) dispatch(ctx context.Context, in *opMsgIn) bson.Raw {
 		return errorReplyFrom(err)
 	}
 	return raw
-}
-
-// dispatchData is the hook the data-path commands (find, insert, getMore, ...) plug
-// into. M8-a implements none of them, so it always reports not-handled and the command
-// falls through to RunCommand. M8-b fills this in.
-func (c *conn) dispatchData(ctx context.Context, dbName, name string, in *opMsgIn) (bson.Raw, bool) {
-	_ = ctx
-	_ = dbName
-	_ = name
-	_ = in
-	return nil, false
 }
 
 // commandContext derives the per-command context, honoring a maxTimeMS deadline if the
@@ -109,11 +115,37 @@ func (c *conn) buildHello(req bson.Raw) bson.Raw {
 		AppendInt32("minWireVersion", 0).
 		AppendInt32("maxWireVersion", maxWireVersion).
 		AppendBoolean("readOnly", c.srv.opts.ReadOnly).
-		AppendArray("compression", bson.Empty)
+		AppendArray("compression", c.negotiateCompression(req))
 
 	c.appendAuthMechs(b)
+	c.appendSpeculative(b, req)
 	b.AppendDouble("ok", 1)
 	return b.Build()
+}
+
+// negotiateCompression reads the client's offered compressor names from hello, picks the
+// one doc supports, and returns the array to advertise back. The chosen compressor is
+// staged as pending so it activates only after this hello reply is written (spec 2061
+// doc 16 §11.2). Re-running hello on the same connection does not downgrade an already
+// active compressor.
+func (c *conn) negotiateCompression(req bson.Raw) bson.Raw {
+	var offered []string
+	if v, ok := req.Lookup("compression"); ok && v.Type == bson.TypeArray {
+		for _, e := range arrayElements(v) {
+			if e.Type == bson.TypeString {
+				offered = append(offered, e.StringValue())
+			}
+		}
+	}
+	id, names := negotiateCompressor(offered)
+	if id != compressorNoop && c.compressor == compressorNoop {
+		c.pendingCompressor = id
+	}
+	vals := make([]bson.RawValue, len(names))
+	for i, n := range names {
+		vals[i] = bson.RawValue{Type: bson.TypeString, Data: encodeString(n)}
+	}
+	return bson.BuildArray(vals...)
 }
 
 // recordClientMeta captures the driver-supplied client document once, for logging.
