@@ -34,16 +34,16 @@ type dbMetrics struct {
 	fsyncs         *metrics.CounterVec
 	fsyncErrors    *metrics.CounterVec
 
-	walSizePages   *metrics.GaugeVec
-	bufferPool     *metrics.GaugeVec
-	fileSize       *metrics.GaugeVec
-	freelistPages  *metrics.GaugeVec
-	fragmentation  *metrics.GaugeVec
-	collectionCnt  *metrics.GaugeVec
-	indexCnt       *metrics.GaugeVec
-	documentCnt    *metrics.GaugeVec // collection
-	indexSize      *metrics.GaugeVec // collection, index
-	activeCursors  *metrics.GaugeVec
+	walSizePages  *metrics.GaugeVec
+	bufferPool    *metrics.GaugeVec
+	fileSize      *metrics.GaugeVec
+	freelistPages *metrics.GaugeVec
+	fragmentation *metrics.GaugeVec
+	collectionCnt *metrics.GaugeVec
+	indexCnt      *metrics.GaugeVec
+	documentCnt   *metrics.GaugeVec // collection
+	indexSize     *metrics.GaugeVec // collection, index
+	activeCursors *metrics.GaugeVec
 
 	totalOps  metrics.Counter // every op, for the snapshot headline
 	totalSlow metrics.Counter // every slow op, for the snapshot headline

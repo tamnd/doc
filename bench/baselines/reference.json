@@ -1,0 +1,25 @@
+{
+  "goVersion": "go1.26.4",
+  "results": [
+    {
+      "workload": "insertOne_full",
+      "ops": 364,
+      "seconds": 3.007745083,
+      "throughputOpsPerSec": 121.0208943761076,
+      "p50Ns": 8008083,
+      "p99Ns": 12805042,
+      "p999Ns": 16005458,
+      "maxNs": 17918042
+    },
+    {
+      "workload": "findOneByID",
+      "ops": 802,
+      "seconds": 3.004106209,
+      "throughputOpsPerSec": 266.96792463505074,
+      "p50Ns": 3441875,
+      "p99Ns": 8016917,
+      "p999Ns": 10546750,
+      "maxNs": 11548916
+    }
+  ]
+}
