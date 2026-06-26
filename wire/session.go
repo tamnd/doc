@@ -69,6 +69,18 @@ func (c *conn) endAllSessions(ctx context.Context) {
 	}
 }
 
+// hasOpenTxn reports whether any session on the connection has a transaction in progress.
+// The idle timeout consults it so a connection mid-transaction is not closed underneath an
+// open transaction (spec 2061 doc 16 §15.4).
+func (c *conn) hasOpenTxn() bool {
+	for _, ws := range c.sessions {
+		if ws.state == txnInProgress {
+			return true
+		}
+	}
+	return false
+}
+
 // sessionKeyOf reads the lsid sub-document off a command and returns a stable map key.
 // The key is the raw bytes of the lsid document, which a driver sends identically on
 // every command of the same session, so there is no need to decode the UUID binary

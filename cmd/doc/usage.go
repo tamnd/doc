@@ -77,6 +77,9 @@ Subcommands:
   doc stats <file>        print database statistics
   doc <file> rekey ...    rotate the encryption key (--new-passphrase or --new-key-file;
                           --data re-encrypts every page under a fresh data key)
+  doc <file> serve ...    serve the MongoDB wire protocol so any driver can connect
+                          (--bind, --port 27017, --tls, --auth, --readonly, --max-conns,
+                          --max-conn-idle; --http adds the metrics/health surface)
 
 Run "doc <file>" then ".help" inside the shell for the full command reference.
 `

@@ -76,6 +76,7 @@ type config struct {
 	readonly   bool
 	cacheBytes int64
 	sync       doc.SyncLevel
+	syncSet    bool // an explicit --sync flag or DOC_SYNC was given
 	pragmas    []string
 
 	// passphrase and keyFile select the secret that opens an encrypted file. At most one is
@@ -141,7 +142,7 @@ func parseArgs(args []string) (*config, bool, error) {
 	}
 	if sv := os.Getenv("DOC_SYNC"); sv != "" {
 		if l, ok := parseSync(sv); ok {
-			c.sync = l
+			c.sync, c.syncSet = l, true
 		}
 	}
 	if wv := os.Getenv("DOC_WIDTH"); wv != "" {
@@ -209,7 +210,7 @@ func parseArgs(args []string) (*config, bool, error) {
 			if !ok {
 				return nil, false, usageError("bad --sync level: " + v)
 			}
-			c.sync = l
+			c.sync, c.syncSet = l, true
 			i = ni
 		case a == "--pragma":
 			v, ni, err := flagValue(args, i, a)
@@ -342,6 +343,12 @@ func parseArgs(args []string) (*config, bool, error) {
 				}
 			}
 		}
+	}
+
+	// The wire server defaults to full durability so a w:1/j:true write is fsynced on
+	// commit, unless the operator picked a sync level explicitly (spec 2061 doc 16 §12).
+	if c.subcommand == "serve" && !c.syncSet {
+		c.sync = doc.SyncFull
 	}
 	return c, false, nil
 }

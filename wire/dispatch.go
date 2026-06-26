@@ -27,6 +27,18 @@ func (c *conn) dispatch(ctx context.Context, in *opMsgIn) bson.Raw {
 		return errorDoc(9, "FailedToParse", "empty command document")
 	}
 
+	// Log a command that runs past the slow-op threshold, regardless of which return path
+	// it takes (spec 2061 doc 16 §2.2).
+	if c.srv.opts.SlowOpThreshold > 0 {
+		start := time.Now()
+		defer func() {
+			if d := time.Since(start); d >= c.srv.opts.SlowOpThreshold {
+				c.srv.opts.Logger.Info("slow command",
+					"connectionId", c.id, "command", name, "durationMs", d.Milliseconds())
+			}
+		}()
+	}
+
 	dbName := lookupString(in.body, "$db")
 	if dbName == "" {
 		dbName = "admin"
