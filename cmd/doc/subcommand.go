@@ -20,6 +20,16 @@ func (a *app) runSubcommand() int {
 			return reportTop(err)
 		}
 		return exitOK
+	case "checkpoint":
+		if err := a.dotCheckpoint(a.cfg.subArgs); err != nil {
+			return reportTop(err)
+		}
+		return exitOK
+	case "vacuum":
+		if err := a.dotVacuum(a.cfg.subArgs); err != nil {
+			return reportTop(err)
+		}
+		return exitOK
 	case "stats":
 		if err := a.dotStats(a.cfg.subArgs); err != nil {
 			return reportTop(err)

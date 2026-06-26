@@ -109,7 +109,71 @@ type Pager struct {
 	checkpointSeq uint32 // current WAL generation
 	walFrames     int    // frames appended in the current generation
 
+	ctr counters // I/O and cache accounting, read by Stats
+
 	closed bool
+}
+
+// counters tallies the pager's I/O and cache activity for the metric registry
+// (spec 2061 doc 18 §2.3). Every field is mutated under p.mu, the same lock every
+// fetch, commit, and checkpoint already holds, so Stats reads them under that lock
+// and needs no atomics.
+type counters struct {
+	pageReads    uint64
+	pageWrites   uint64
+	bytesRead    uint64
+	bytesWritten uint64
+	cacheHits    uint64
+	cacheMisses  uint64
+	walFrames    uint64
+	checkpoints  uint64
+	fsyncs       uint64
+	fsyncErrors  uint64
+}
+
+// Stats is a point-in-time view of the pager's accounting, the storage half of
+// the metric catalogue (spec 2061 doc 18 §2.3). Sizes are reported in pages where
+// the file is naturally paged and in bytes where the metric is byte-denominated.
+type Stats struct {
+	PageReads      uint64
+	PageWrites     uint64
+	BytesRead      uint64
+	BytesWritten   uint64
+	CacheHits      uint64
+	CacheMisses    uint64
+	CacheEvictions uint64
+	WALFramesTotal uint64
+	WALSizePages   uint64
+	Checkpoints    uint64
+	Fsyncs         uint64
+	FsyncErrors    uint64
+	FreelistPages  uint64
+	FileSizePages  uint64
+	PageSize       uint64
+}
+
+// Stats returns the pager's accounting under the pager lock, so the snapshot is
+// internally consistent with whatever fetch, commit, or checkpoint last ran.
+func (p *Pager) Stats() Stats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return Stats{
+		PageReads:      p.ctr.pageReads,
+		PageWrites:     p.ctr.pageWrites,
+		BytesRead:      p.ctr.bytesRead,
+		BytesWritten:   p.ctr.bytesWritten,
+		CacheHits:      p.ctr.cacheHits,
+		CacheMisses:    p.ctr.cacheMisses,
+		CacheEvictions: uint64(p.pool.evictions),
+		WALFramesTotal: p.ctr.walFrames,
+		WALSizePages:   uint64(p.walFrames),
+		Checkpoints:    p.ctr.checkpoints,
+		Fsyncs:         p.ctr.fsyncs,
+		FsyncErrors:    p.ctr.fsyncErrors,
+		FreelistPages:  uint64(p.hdr.FreelistPageCount),
+		FileSizePages:  uint64(p.hdr.PageCount),
+		PageSize:       uint64(p.pageSize),
+	}
 }
 
 // Open opens the database at path on fs, creating it when it does not exist and
@@ -394,8 +458,10 @@ func (p *Pager) fetchLocked(pageID uint64) (*Frame, error) {
 	if f := p.pool.lookup(pageID); f != nil {
 		f.pins.Add(1)
 		p.pool.recordHit(f)
+		p.ctr.cacheHits++
 		return f, nil
 	}
+	p.ctr.cacheMisses++
 	f, err := p.obtainFrameLocked()
 	if err != nil {
 		return nil, err
@@ -406,6 +472,8 @@ func (p *Pager) fetchLocked(pageID uint64) (*Frame, error) {
 		p.pool.resident--
 		return nil, err
 	}
+	p.ctr.pageReads++
+	p.ctr.bytesRead += uint64(p.pageSize)
 	f.pageLSN = p.readPageLSN(pageID, f.Buf)
 	f.dirty = false
 	p.pool.admit(f, pageID)
@@ -651,6 +719,8 @@ func (p *Pager) commitLocked() error {
 	}
 	p.walFlushedLSN = maxLSN
 	p.walFrames += len(images)
+	p.ctr.walFrames += uint64(len(images))
+	p.ctr.bytesWritten += uint64(len(images)) * uint64(p.pageSize)
 
 	if p.walFrames >= p.ckptN {
 		return p.checkpointLocked()
@@ -660,14 +730,25 @@ func (p *Pager) commitLocked() error {
 
 // syncWAL fsyncs the WAL at the configured durability level.
 func (p *Pager) syncWAL() error {
-	switch p.sync {
-	case SyncOff:
+	if p.sync == SyncOff {
 		return nil
-	case SyncFull:
-		return p.walFile.Sync(vfs.SyncFull)
-	default:
-		return p.walFile.Sync(vfs.SyncData)
 	}
+	level := vfs.SyncData
+	if p.sync == SyncFull {
+		level = vfs.SyncFull
+	}
+	return p.countSync(p.walFile, level)
+}
+
+// countSync fsyncs a file and folds the call into the fsync counters so the
+// metric catalogue's fsync_total and fsync_errors_total stay accurate.
+func (p *Pager) countSync(f vfs.File, level vfs.SyncMode) error {
+	p.ctr.fsyncs++
+	if err := f.Sync(level); err != nil {
+		p.ctr.fsyncErrors++
+		return err
+	}
+	return nil
 }
 
 // Checkpoint writes every committed dirty page to the main file, fsyncs it, and
@@ -676,6 +757,120 @@ func (p *Pager) Checkpoint() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.checkpointLocked()
+}
+
+// CheckpointThreshold returns the WAL frame count that triggers an automatic
+// checkpoint (the wal_autocheckpoint pragma, spec 2061 doc 18 §15.4).
+func (p *Pager) CheckpointThreshold() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ckptN
+}
+
+// SetCheckpointThreshold sets the automatic-checkpoint frame count. A value of
+// zero or less disables automatic checkpointing; the WAL then grows until an
+// explicit Checkpoint.
+func (p *Pager) SetCheckpointThreshold(frames int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ckptN = frames
+}
+
+// IncrementalVacuum reclaims up to n trailing free pages to the operating system,
+// the engine behind PRAGMA incremental_vacuum(N) (spec 2061 doc 18 §15.2). It
+// checkpoints first so the main file holds all committed data, rebuilds the
+// freelist without the pages that sit at the tail of the file, lowers the page
+// count, makes that durable, and truncates the file. A value of n at or below zero
+// reclaims every trailing free page. It returns the number of pages reclaimed.
+//
+// The sequence is crash-safe: if a crash interrupts it after the commit but before
+// the truncate, recovery restores the lower page count and the trailing pages are
+// simply unused tail that the next vacuum reclaims, never corruption.
+func (p *Pager) IncrementalVacuum(n int) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return 0, ErrClosed
+	}
+	if p.readOnly {
+		return 0, ErrReadOnly
+	}
+	if err := p.checkpointLocked(); err != nil {
+		return 0, err
+	}
+
+	free, err := p.collectFreelistLocked()
+	if err != nil {
+		return 0, err
+	}
+
+	pageCount := uint64(p.hdr.PageCount)
+	newCount := pageCount
+	reclaim := 0
+	for newCount > 1 && free[newCount-1] && (n <= 0 || reclaim < n) {
+		delete(free, newCount-1)
+		newCount--
+		reclaim++
+	}
+	if reclaim == 0 {
+		return 0, nil
+	}
+
+	// Rebuild the freelist chain from the pages that survive, then lower the page
+	// count in the header. Every surviving free page sits below newCount, so the
+	// rewritten chain never points past the new end of file.
+	p.hdr.FreelistRoot = format.NullPage
+	p.hdr.FreelistPageCount = 0
+	for pid := range free {
+		f, ferr := p.fetchLocked(pid)
+		if ferr != nil {
+			return 0, ferr
+		}
+		format.InitPage(f.Buf, format.PageFree, 0)
+		binary.LittleEndian.PutUint32(f.Buf[freelistNextOffset:freelistNextOffset+4], p.hdr.FreelistRoot)
+		p.hdr.FreelistRoot = uint32(pid)
+		p.hdr.FreelistPageCount++
+		p.markDirtyLocked(f)
+		p.Unpin(f)
+	}
+	p.hdr.PageCount = uint32(newCount)
+	p.touchHeaderLocked()
+
+	// Make the rewritten freelist and header durable, fold them into the main
+	// file, then shrink the file to the new page count.
+	if err := p.commitLocked(); err != nil {
+		return 0, err
+	}
+	if err := p.checkpointLocked(); err != nil {
+		return 0, err
+	}
+	for pid := newCount; pid < pageCount; pid++ {
+		p.pool.forget(pid)
+	}
+	if err := p.main.Truncate(int64(newCount) * int64(p.pageSize)); err != nil {
+		return 0, err
+	}
+	if err := p.countSync(p.main, vfs.SyncFull); err != nil {
+		return 0, err
+	}
+	return reclaim, nil
+}
+
+// collectFreelistLocked walks the freelist chain into a set of its page ids.
+func (p *Pager) collectFreelistLocked() (map[uint64]bool, error) {
+	free := make(map[uint64]bool, p.hdr.FreelistPageCount)
+	pid := p.hdr.FreelistRoot
+	for pid != format.NullPage {
+		f, err := p.fetchLocked(uint64(pid))
+		if err != nil {
+			return nil, err
+		}
+		free[uint64(pid)] = true
+		next := binary.LittleEndian.Uint32(f.Buf[freelistNextOffset : freelistNextOffset+4])
+		p.Unpin(f)
+		pid = next
+	}
+	return free, nil
 }
 
 func (p *Pager) checkpointLocked() error {
@@ -699,9 +894,10 @@ func (p *Pager) checkpointLocked() error {
 			return err
 		}
 	}
-	if err := p.main.Sync(vfs.SyncFull); err != nil {
+	if err := p.countSync(p.main, vfs.SyncFull); err != nil {
 		return err
 	}
+	p.ctr.checkpoints++
 
 	// Fresh generation: the committed data now lives in the main file, so the
 	// old WAL can be discarded.
@@ -727,6 +923,8 @@ func (p *Pager) writeBack(f *Frame) error {
 	if _, err := p.main.WriteAt(f.Buf, off); err != nil {
 		return err
 	}
+	p.ctr.pageWrites++
+	p.ctr.bytesWritten += uint64(p.pageSize)
 	f.dirty = false
 	return nil
 }
@@ -739,7 +937,7 @@ func (p *Pager) Sync() error {
 	if p.closed {
 		return ErrClosed
 	}
-	return p.main.Sync(vfs.SyncFull)
+	return p.countSync(p.main, vfs.SyncFull)
 }
 
 // Close checkpoints (flushing committed data to the main file), closes the WAL

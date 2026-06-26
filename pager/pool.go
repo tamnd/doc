@@ -29,7 +29,8 @@ type pool struct {
 	kin      int // a1in target size; over this, eviction prefers a1in
 	ghostCap int // maximum a1out entries
 
-	resident int // frames currently allocated (<= capacity)
+	resident  int // frames currently allocated (<= capacity)
+	evictions int // victims reclaimed over the pool's life, for the cache metric
 
 	// committedLSN is the highest durably-committed LSN, mirrored from the Pager
 	// before eviction. A dirty frame whose pageLSN exceeds it holds uncommitted
@@ -149,6 +150,7 @@ func (p *pool) evictFrom(fromA1 bool) *Frame {
 		if fromA1 {
 			p.addGhost(v.PageID)
 		}
+		p.evictions++
 		return v
 	}
 	return nil
@@ -175,6 +177,27 @@ func (p *pool) removeGhost(pageID uint64) {
 			break
 		}
 	}
+}
+
+// forget drops the resident frame for pageID from the page table and whichever 2Q
+// list holds it, and frees its residency slot. Incremental vacuum calls it for the
+// trailing pages it truncates, so the pool holds no frame for a page the file no
+// longer contains. The frame must be clean and unpinned, which the truncated free
+// pages always are after a checkpoint.
+func (p *pool) forget(pageID uint64) {
+	f := p.table[pageID]
+	if f == nil {
+		return
+	}
+	delete(p.table, pageID)
+	switch f.loc {
+	case listA1in:
+		p.a1in.remove(f)
+	case listAm:
+		p.am.remove(f)
+	}
+	f.loc = listNone
+	p.resident--
 }
 
 // forEachResident calls fn for every resident frame. Used by the checkpoint to

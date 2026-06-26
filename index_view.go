@@ -100,6 +100,7 @@ func (iv IndexView) CreateOne(ctx context.Context, model IndexModel, opts ...*op
 	if err := iv.coll.db.check(ctx); err != nil {
 		return "", err
 	}
+	defer iv.coll.observe("createIndex")(0, 0, 0)
 	em, err := toEngineModel(model)
 	if err != nil {
 		return "", err
@@ -117,6 +118,7 @@ func (iv IndexView) CreateMany(ctx context.Context, models []IndexModel, opts ..
 	if err := iv.coll.db.check(ctx); err != nil {
 		return nil, err
 	}
+	defer iv.coll.observe("createIndex")(0, 0, 0)
 	ems := make([]collection.IndexModel, len(models))
 	for i, m := range models {
 		em, err := toEngineModel(m)
@@ -139,6 +141,7 @@ func (iv IndexView) DropOne(ctx context.Context, name string, opts ...*options.L
 	if err := iv.coll.db.check(ctx); err != nil {
 		return nil, err
 	}
+	defer iv.coll.observe("dropIndex")(0, 0, 0)
 	col := iv.coll.readable()
 	if col == nil {
 		return nil, ErrNamespaceNotFound
@@ -151,6 +154,7 @@ func (iv IndexView) DropAll(ctx context.Context, opts ...*options.ListIndexesOpt
 	if err := iv.coll.db.check(ctx); err != nil {
 		return nil, err
 	}
+	defer iv.coll.observe("dropIndex")(0, 0, 0)
 	col := iv.coll.readable()
 	if col == nil {
 		return nil, nil

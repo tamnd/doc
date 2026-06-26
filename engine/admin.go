@@ -157,3 +157,21 @@ func (e *Engine) SyncLevel() pager.SyncLevel { return e.pgr.SyncLevel() }
 // SetSyncLevel changes the pager's commit durability level at runtime, the write
 // half of the synchronous PRAGMA.
 func (e *Engine) SetSyncLevel(l pager.SyncLevel) { e.pgr.SetSync(l) }
+
+// Checkpoint folds the WAL into the main file and starts a fresh WAL generation,
+// the engine behind the wal_checkpoint pragma and doc checkpoint (spec 2061 doc 18
+// §15.4).
+func (e *Engine) Checkpoint() error { return e.pgr.Checkpoint() }
+
+// IncrementalVacuum reclaims up to n trailing free pages to the operating system,
+// the engine behind PRAGMA incremental_vacuum(N). n at or below zero reclaims every
+// trailing free page. It returns the number of pages reclaimed.
+func (e *Engine) IncrementalVacuum(n int) (int, error) { return e.pgr.IncrementalVacuum(n) }
+
+// CheckpointThreshold returns the automatic-checkpoint WAL frame count, the value
+// the wal_autocheckpoint pragma reads.
+func (e *Engine) CheckpointThreshold() int { return e.pgr.CheckpointThreshold() }
+
+// SetCheckpointThreshold sets the automatic-checkpoint WAL frame count, the write
+// half of the wal_autocheckpoint pragma.
+func (e *Engine) SetCheckpointThreshold(frames int) { e.pgr.SetCheckpointThreshold(frames) }

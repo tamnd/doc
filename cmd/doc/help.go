@@ -27,6 +27,8 @@ const dotHelpText = `Dot-commands (meta-operations):
   .pragma [name[=value]]      read or write an engine setting, or list all
   .check [full]       verify file, heap, and index integrity (full adds checksums)
   .compact            rewrite the file, reclaiming space from deleted documents
+  .checkpoint [mode]  fold the WAL into the main file without closing
+  .vacuum [pages]     reclaim trailing free pages to the OS (needs auto_vacuum)
   .explain <coll> [filter] [verbosity]   show the query plan for a find
   .begin              begin an explicit transaction
   .commit             commit the current transaction
@@ -51,5 +53,7 @@ var dotHelpDetail = map[string]string{
 	"pragma":      ".pragma [name[=value]] - with no argument list every engine setting; with a name read it; with name=value write it. Writable: synchronous, default_isolation",
 	"check":       ".check [full] - walk the freelist, heap, and every index, reporting any corruption; full also re-reads every page to verify its checksum. Exits non-zero when a problem is found",
 	"compact":     ".compact - rebuild the file into a fresh, hole-free copy, reclaiming the space held by deleted documents, superseded versions, and forwarding tombstones. Offline: nothing else runs during it",
+	"checkpoint":  ".checkpoint [mode] - fold the write-ahead log into the main file and start a fresh WAL, online, without closing the database. The mode (passive, full, restart, truncate) is accepted for compatibility; doc runs the same full checkpoint for each",
+	"vacuum":      ".vacuum [pages] - reclaim trailing free pages to the operating system, shrinking the file. With a page count it reclaims at most that many; without one it reclaims every trailing free page. Requires PRAGMA auto_vacuum to be incremental or full",
 	"explain":     ".explain <coll> [filter] [verbosity] - show how the planner would run a find: the chosen plan and the index it picks. Verbosity is queryPlanner (default) or executionStats",
 }

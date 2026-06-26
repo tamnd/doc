@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tamnd/doc"
@@ -75,6 +76,40 @@ func (a *app) dotCompact(_ []string) error {
 		return classify(err)
 	}
 	return a.rend.writeText("ok: database compacted")
+}
+
+// dotCheckpoint folds the WAL into the main file without closing the database (spec
+// 2061 doc 18 §15.4). The optional argument is a checkpoint mode (passive, full,
+// restart, truncate); doc performs the same full checkpoint for every mode.
+func (a *app) dotCheckpoint(args []string) error {
+	mode := ""
+	if len(args) > 0 {
+		mode = args[0]
+	}
+	if err := a.db.Checkpoint(a.ctx(), mode); err != nil {
+		return classify(err)
+	}
+	return a.rend.writeText("ok: checkpoint complete")
+}
+
+// dotVacuum reclaims trailing free pages to the operating system (spec 2061 doc 18
+// §15.2). The optional argument bounds how many pages to reclaim; absent, it
+// reclaims every trailing free page. It requires auto_vacuum to be enabled, matching
+// the engine of PRAGMA incremental_vacuum.
+func (a *app) dotVacuum(args []string) error {
+	n := 0
+	if len(args) > 0 {
+		v, err := strconv.Atoi(args[0])
+		if err != nil || v < 0 {
+			return usageErr(".vacuum [pages]")
+		}
+		n = v
+	}
+	reclaimed, err := a.db.IncrementalVacuum(a.ctx(), n)
+	if err != nil {
+		return classify(err)
+	}
+	return a.rend.writeText(fmt.Sprintf("ok: reclaimed %d pages", reclaimed))
 }
 
 // dotExplain prints the query plan for a find on a collection (spec 2061 doc 11 §9).

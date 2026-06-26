@@ -1,6 +1,7 @@
 package doc
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -100,6 +101,79 @@ var pragmas = map[string]pragmaDesc{
 		scope: "fixed",
 		read:  func(*DB) string { return strconv.Itoa(maxBSONSize) },
 	},
+	"profile": {
+		scope: "runtime",
+		read:  func(db *DB) string { return strconv.Itoa(db.prof.Level()) },
+		write: func(db *DB, v string) error {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n < 0 || n > 2 {
+				return fmt.Errorf("doc: profile wants 0, 1, or 2, got %q", v)
+			}
+			db.prof.SetLevel(n)
+			return nil
+		},
+	},
+	"wal_checkpoint": {
+		scope: "runtime",
+		read:  func(db *DB) string { return strconv.FormatUint(db.eng.PagerStats().WALSizePages, 10) },
+		write: func(db *DB, v string) error {
+			mode := strings.TrimSpace(v)
+			if mode == "1" || strings.EqualFold(mode, "checkpoint") {
+				mode = ""
+			}
+			return db.Checkpoint(context.Background(), mode)
+		},
+	},
+	"wal_autocheckpoint": {
+		scope: "runtime",
+		read:  func(db *DB) string { return strconv.Itoa(db.eng.CheckpointThreshold()) },
+		write: func(db *DB, v string) error {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n < 0 {
+				return fmt.Errorf("doc: wal_autocheckpoint wants a non-negative frame count, got %q", v)
+			}
+			db.eng.SetCheckpointThreshold(n)
+			return nil
+		},
+	},
+	"auto_vacuum": {
+		scope: "runtime",
+		read:  func(db *DB) string { return db.autoVacuumMode() },
+		write: func(db *DB, v string) error {
+			mode, ok := parseAutoVacuumMode(v)
+			if !ok {
+				return fmt.Errorf("doc: auto_vacuum wants none, incremental, or full, got %q", v)
+			}
+			db.setAutoVacuumMode(mode)
+			return nil
+		},
+	},
+	"incremental_vacuum": {
+		scope: "runtime",
+		read:  func(*DB) string { return "0" },
+		write: func(db *DB, v string) error {
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil || n < 0 {
+				return fmt.Errorf("doc: incremental_vacuum wants a non-negative page count, got %q", v)
+			}
+			_, err = db.IncrementalVacuum(context.Background(), n)
+			return err
+		},
+	},
+}
+
+// parseAutoVacuumMode normalizes an auto_vacuum value. SQLite accepts the numeric
+// forms 0, 1, 2 as well as the names none, full, incremental; doc accepts both.
+func parseAutoVacuumMode(v string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "none":
+		return "none", true
+	case "1", "full":
+		return "full", true
+	case "2", "incremental":
+		return "incremental", true
+	}
+	return "", false
 }
 
 // maxBSONSize is the largest document doc accepts, matching MongoDB's 16 MiB limit
