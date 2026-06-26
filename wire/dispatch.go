@@ -27,25 +27,42 @@ func (c *conn) dispatch(ctx context.Context, in *opMsgIn) bson.Raw {
 		return errorDoc(9, "FailedToParse", "empty command document")
 	}
 
-	switch name {
-	case "hello", "ismaster":
-		return c.buildHello(in.body)
-	case "ping":
-		return okReply()
-	case "saslstart", "saslcontinue", "logout":
-		// Authentication arrives in M8-c. With no auth configured the server has no
-		// credentials to check against, so it reports the mechanism as unsupported
-		// rather than pretending to authenticate.
-		return errorDoc(59, "CommandNotFound", "authentication is not configured on this server")
-	}
-
 	dbName := lookupString(in.body, "$db")
 	if dbName == "" {
 		dbName = "admin"
 	}
 
+	switch name {
+	case "hello", "ismaster":
+		return c.buildHello(in.body)
+	case "ping":
+		return okReply()
+	case "saslstart":
+		if !c.srv.authConfigured() {
+			return errorDoc(59, "CommandNotFound", "authentication is not configured on this server")
+		}
+		return c.handleSaslStart(ctx, dbName, in.body)
+	case "saslcontinue":
+		if !c.srv.authConfigured() {
+			return errorDoc(59, "CommandNotFound", "authentication is not configured on this server")
+		}
+		return c.handleSaslContinue(ctx, in.body)
+	case "logout":
+		return c.handleLogout()
+	}
+
 	ctx, cancel := c.commandContext(ctx, in.body)
 	defer cancel()
+
+	// Every remaining command passes the authorization gate before it is routed (spec
+	// 2061 doc 16 §19).
+	if deny := c.authorize(ctx, dbName, name); deny != nil {
+		return deny
+	}
+
+	if reply, handled := c.dispatchUsers(ctx, dbName, name, in.body); handled {
+		return reply
+	}
 
 	if reply, handled := c.dispatchData(ctx, dbName, name, in); handled {
 		return reply
@@ -101,6 +118,7 @@ func (c *conn) buildHello(req bson.Raw) bson.Raw {
 		AppendArray("compression", c.negotiateCompression(req))
 
 	c.appendAuthMechs(b)
+	c.appendSpeculative(b, req)
 	b.AppendDouble("ok", 1)
 	return b.Build()
 }

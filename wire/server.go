@@ -33,6 +33,11 @@ type Options struct {
 	MaxMessageBytes int32
 	// ReadOnly advertises a read-only server in the hello response.
 	ReadOnly bool
+	// AuthRequired turns on authentication: every connection must authenticate before
+	// running any command beyond the handshake, and commands are checked against the
+	// authenticated user's roles (spec 2061 doc 16 §19). The loopback exception lets an
+	// operator create the first user while none exist.
+	AuthRequired bool
 	// Logger receives connection lifecycle events; nil means slog.Default.
 	Logger *slog.Logger
 }

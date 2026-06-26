@@ -27,6 +27,16 @@ type conn struct {
 	// negotiated it has been written, so that reply itself goes out uncompressed.
 	compressor        byte
 	pendingCompressor byte
+
+	// auth is the authenticated identity, nil until a SCRAM conversation succeeds. scram
+	// holds the in-flight conversation and scramIdentity the identity it will adopt on a
+	// valid proof; scramConvID is the conversation id echoed back to the driver. convSeq
+	// numbers conversations on this connection.
+	auth          *identity
+	scram         *scramServer
+	scramIdentity *identity
+	scramConvID   int32
+	convSeq       int32
 }
 
 // conn0Server is the slice of Server a conn needs. It is an alias so server.go and
@@ -128,6 +138,23 @@ func (c *conn) handleLegacyQuery(msg *rawMessage) (reply []byte, keepGoing bool)
 	}
 	resp := c.buildHello(query)
 	return encodeOpReply(c.srv.nextRequestID(), msg.header.RequestID, resp), true
+}
+
+// isLoopback reports whether the peer connected over a loopback address, which the
+// localhost exception keys off (spec 2061 doc 16 §8.6).
+func (c *conn) isLoopback() bool {
+	host, _, err := net.SplitHostPort(c.nc.RemoteAddr().String())
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// nextConvID hands out the next SASL conversation id for this connection.
+func (c *conn) nextConvID() int32 {
+	c.convSeq++
+	return c.convSeq
 }
 
 func (c *conn) protocolErrorReply(responseTo int32, err error) []byte {
