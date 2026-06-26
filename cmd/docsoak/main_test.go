@@ -12,6 +12,9 @@ func TestSoakSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping soak smoke in -short")
 	}
+	if raceEnabled {
+		t.Skip("soak degradation gate measures wall-clock latency, which the race detector makes too noisy to assert")
+	}
 	err := soak(2*time.Second, 500*time.Millisecond, 8, 2, 200, 0.50, 4096)
 	if err != nil {
 		t.Fatalf("soak smoke failed: %v", err)

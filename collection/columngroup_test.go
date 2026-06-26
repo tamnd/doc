@@ -193,6 +193,13 @@ func TestVectorGroupMatchesReconstruct(t *testing.T) {
 	if testing.Short() {
 		rounds = 5
 	}
+	if raceEnabled && rounds > 2 {
+		// Each round seeds enough rows for the column plan to engage (the store beats
+		// the heap above roughly one segment of rows), so the seed dominates under the
+		// race detector. Two rounds still vary the data and pipelines enough to catch a
+		// divergence; the full round count runs without -race.
+		rounds = 2
+	}
 	for round := 0; round < rounds; round++ {
 		seed := int64(round)*1000003 + 7
 		c := seedRandomColumn(t, 1500, seed)

@@ -75,6 +75,9 @@ func TestLatencyBudgetFindOneByID(t *testing.T) {
 	if testing.Short() {
 		t.Skip("latency harness skipped under -short")
 	}
+	if raceEnabled {
+		t.Skip("latency budgets measure wall-clock latency and mean nothing under the race detector")
+	}
 	const n = 10000
 	c := warmAllocColl(t, n)
 
@@ -115,6 +118,9 @@ func TestLatencyBudgetFindOneByID(t *testing.T) {
 func TestLatencyBudgetGroupColumnar(t *testing.T) {
 	if testing.Short() {
 		t.Skip("latency harness skipped under -short")
+	}
+	if raceEnabled {
+		t.Skip("latency budgets measure wall-clock latency and mean nothing under the race detector")
 	}
 	const n = 50000
 	c := newTestColl(t)

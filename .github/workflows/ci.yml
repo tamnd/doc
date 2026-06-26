@@ -34,8 +34,12 @@ jobs:
         run: go vet ./...
       # The race detector needs cgo, so this step leaves CGO_ENABLED at its
       # default. It exercises behavior, not the build, so cgo here is fine.
+      # -short trims the high-volume stress and latency suites down to the
+      # sizes that still cover the concurrent paths the race detector cares
+      # about, which keeps the instrumented run well inside the timeout. The
+      # full-volume suites run without -race in local and nightly runs.
       - name: test (race + coverage)
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -race -short -timeout 20m -covermode=atomic -coverprofile=coverage.out ./...
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
