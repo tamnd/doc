@@ -24,16 +24,25 @@ import (
 // small bounded count from the clone and the string key. The buffer-pool zero-copy path
 // is the deferred storage-engine work, not a behavior the overlay claims to meet.
 
-const (
-	// zeroAllocTol is the §24.3 tolerance: 0 would flake when the GC evicts a pool
-	// entry between runs, so the gate allows up to a tenth of an allocation per op.
-	zeroAllocTol = 0.1
-	allocRuns    = 2000
-)
+// zeroAllocTol is the §24.3 tolerance: 0 would flake when the GC evicts a pool
+// entry between runs, so the gate allows up to a tenth of an allocation per op.
+const zeroAllocTol = 0.1
 
-// warmAllocColl loads n documents over {_id, v} and returns the warm collection.
+// allocRuns is the AllocsPerRun sample count. It lives in the race/norace gate files
+// so the race build can take a smaller sample: the per-op budget is what the test
+// asserts, and a few hundred runs pin it as firmly as a few thousand, without paying
+// the race detector's per-op cost thousands of times over.
+
+// warmAllocColl loads n documents over {_id, v} and returns the warm collection. The
+// race build caps the seed: the allocation budgets are per-op and do not depend on the
+// dataset size, and every caller that reads a specific _id reads one at or below 1000,
+// so a smaller tree still warms the same path without paying for thousands of durable
+// inserts under the race detector.
 func warmAllocColl(t *testing.T, n int) *Collection {
 	t.Helper()
+	if raceEnabled && n > 1100 {
+		n = 1100
+	}
 	c := newTestColl(t)
 	for i := 0; i < n; i++ {
 		if _, err := c.InsertOne(docInt(int32(i+1), "v", int32(i))); err != nil {
