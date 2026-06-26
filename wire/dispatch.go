@@ -60,6 +60,21 @@ func (c *conn) dispatch(ctx context.Context, in *opMsgIn) bson.Raw {
 		return deny
 	}
 
+	// Session and transaction control commands run before the data path; they manage the
+	// session table rather than a collection (spec 2061 doc 16 §10).
+	if reply, handled := c.dispatchSession(ctx, name, in.body); handled {
+		return reply
+	}
+
+	// A command that carries lsid/txnNumber runs on its session's transaction; one that
+	// carries only an lsid, or none, runs auto-commit. Binding happens here so the data
+	// path and RunCommand both see the transaction's snapshot (spec 2061 doc 16 §10.2).
+	sctx, deny := c.txnContext(ctx, in.body)
+	if deny != nil {
+		return deny
+	}
+	ctx = sctx
+
 	if reply, handled := c.dispatchUsers(ctx, dbName, name, in.body); handled {
 		return reply
 	}
