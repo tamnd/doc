@@ -317,6 +317,24 @@ func (d *Database) cmdCreate(ctx context.Context, target string, cmd bson.Raw) *
 	if hasValidator && !hasLevel {
 		o.SetValidationLevel("strict")
 	}
+	// storageEngine.columnarStore / columnarFields turn on the columnar projection
+	// store at create time (spec 2061 doc 09 §6, doc 04 §10).
+	if v, ok := cmd.Lookup("storageEngine"); ok && v.Type == bson.TypeDocument {
+		se := v.Document()
+		if sv, ok := se.Lookup("columnarStore"); ok && sv.Type == bson.TypeString {
+			o.SetColumnarStore(sv.StringValue())
+		}
+		if fv, ok := se.Lookup("columnarFields"); ok && fv.Type == bson.TypeArray {
+			els, _ := fv.Document().Elements()
+			fields := make([]string, 0, len(els))
+			for _, e := range els {
+				if e.Value.Type == bson.TypeString {
+					fields = append(fields, e.Value.StringValue())
+				}
+			}
+			o.SetColumnarFields(fields)
+		}
+	}
 	if err := d.CreateCollection(ctx, target, o); err != nil {
 		return newSingleResult(nil, err)
 	}

@@ -25,9 +25,14 @@ func (t *Txn) Aggregate(pipeline []bson.Raw) ([]bson.Raw, error) {
 	if err != nil {
 		return nil, err
 	}
-	docs, err := t.Find(matchAll())
-	if err != nil {
-		return nil, err
+	// A covered analytical pipeline reads its fields from the columnar projection
+	// store instead of the heap (spec 2061 doc 04 §10.5). The store reconstructs only
+	// the covered fields, so the same compiled pipeline produces an identical result.
+	docs, ok := t.columnSource(pipeline)
+	if !ok {
+		if docs, err = t.Find(matchAll()); err != nil {
+			return nil, err
+		}
 	}
 	return p.RunWith(docs, t.c.clk.Now().UnixMilli(), t.aggEnv())
 }

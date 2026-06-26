@@ -1,6 +1,8 @@
 package catalog
 
 import (
+	"strconv"
+
 	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/format"
 )
@@ -67,6 +69,13 @@ type CollectionOptions struct {
 
 	// Storage tuning, all kinds.
 	PageFill uint8
+
+	// Columnar projection store (spec 2061 doc 04 §10, doc 19 §21.4). ColumnarMode
+	// is "", "transactional", or "lazy" ("" and "off" both mean heap-only).
+	// ColumnarFields lists the projected field paths; empty means every observed
+	// top-level field.
+	ColumnarMode   string
+	ColumnarFields []string
 }
 
 // CollectionRecord is the catalog entry for one collection (spec 2061 doc 09
@@ -181,6 +190,16 @@ func encodeCollection(r *CollectionRecord) bson.Raw {
 		ob.AppendArray("viewPipeline", r.Options.ViewPipeline)
 	}
 	ob.AppendInt32("pageFill", int32(r.Options.PageFill))
+	if r.Options.ColumnarMode != "" {
+		ob.AppendString("columnarMode", r.Options.ColumnarMode)
+	}
+	if len(r.Options.ColumnarFields) > 0 {
+		fb := bson.NewBuilder()
+		for i, f := range r.Options.ColumnarFields {
+			fb.AppendString(strconv.Itoa(i), f)
+		}
+		ob.AppendArray("columnarFields", fb.Build())
+	}
 	b.AppendDocument("options", ob.Build())
 
 	return b.Build()
@@ -244,6 +263,15 @@ func decodeCollection(d bson.Raw) *CollectionRecord {
 		}
 		if ov, ok := od.Lookup("pageFill"); ok {
 			r.Options.PageFill = uint8(ov.Int32())
+		}
+		if ov, ok := od.Lookup("columnarMode"); ok {
+			r.Options.ColumnarMode = ov.StringValue()
+		}
+		if ov, ok := od.Lookup("columnarFields"); ok && ov.Type == bson.TypeArray {
+			els, _ := ov.Document().Elements()
+			for _, e := range els {
+				r.Options.ColumnarFields = append(r.Options.ColumnarFields, e.Value.StringValue())
+			}
 		}
 	}
 	return r

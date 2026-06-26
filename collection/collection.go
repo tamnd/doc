@@ -18,6 +18,7 @@ import (
 
 	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/catalog"
+	"github.com/tamnd/doc/colstore"
 	"github.com/tamnd/doc/heap"
 	"github.com/tamnd/doc/index"
 	"github.com/tamnd/doc/mvcc"
@@ -115,6 +116,12 @@ type Collection struct {
 	// emit, when set by the engine, receives the change records of every committed
 	// transaction so a change stream can observe them; nil means no feed.
 	emit EmitFunc
+
+	// cstore is the optional columnar projection store (spec 2061 doc 04 §10). It is
+	// nil unless the columnar_store PRAGMA enabled it; when set, the commit path
+	// maintains it from the same change records the feed sees, and a covered
+	// aggregation routes through it instead of scanning the heap.
+	cstore *colstore.Store
 
 	mu       sync.Mutex
 	byID     map[string]*chain      // overlay key (encoded _id) -> version chain

@@ -239,6 +239,15 @@ func findCycle(adj [][]int) []int {
 // runStress drives the randomized concurrent workload at the given isolation level and
 // returns the seed commit version, the key space, and the recorded committed history.
 func runStress(t *testing.T, iso IsolationLevel) (uint64, []int32, []txnHistory) {
+	return runStressParams(t, iso, 80, 0)
+}
+
+// runStressParams is the parameterized stress driver. txnsPerWorker sets the
+// per-goroutine transaction count and seedBase offsets every worker's RNG seed so
+// successive rounds explore distinct interleavings while staying deterministic
+// (spec 2061 doc 19 §19.2). It returns the seed commit version, the key space, and
+// the recorded committed history.
+func runStressParams(t *testing.T, iso IsolationLevel, txnsPerWorker int, seedBase uint64) (uint64, []int32, []txnHistory) {
 	t.Helper()
 	c := newTestColl(t)
 
@@ -261,7 +270,6 @@ func runStress(t *testing.T, iso IsolationLevel) (uint64, []int32, []txnHistory)
 
 	opts := TransactionOptions{Isolation: iso}
 	workers := 2 * runtime.GOMAXPROCS(0)
-	const txnsPerWorker = 80
 
 	var tagSeq int64
 	var mu sync.Mutex
@@ -269,7 +277,7 @@ func runStress(t *testing.T, iso IsolationLevel) (uint64, []int32, []txnHistory)
 
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
-		seedRand := uint64(w)*2862933555777941757 + 3037000493
+		seedRand := (seedBase+uint64(w))*2862933555777941757 + 3037000493
 		wg.Add(1)
 		go func(rng uint64) {
 			defer wg.Done()

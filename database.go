@@ -3,6 +3,7 @@ package doc
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/tamnd/doc/bson"
 	"github.com/tamnd/doc/catalog"
@@ -79,6 +80,12 @@ func createSpec(opts []*options.CreateCollectionOptions) (engine.CreateSpec, err
 		if o.ValidationAction != nil {
 			spec.ValidationAction = validationAction(*o.ValidationAction)
 		}
+		if o.ColumnarStore != nil {
+			spec.ColumnarMode = columnarSpecMode(*o.ColumnarStore)
+		}
+		if o.ColumnarFields != nil {
+			spec.ColumnarFields = o.ColumnarFields
+		}
 	}
 	// MongoDB defaults validationLevel to strict when a validator is set without
 	// an explicit level. The catalog zero value is ValidationOff, which would make
@@ -99,6 +106,20 @@ func validationLevel(s string) catalog.ValidationLevel {
 		return catalog.ValidationModerate
 	default:
 		return catalog.ValidationStrict
+	}
+}
+
+// columnarSpecMode normalizes a columnar_store option spelling onto the persisted
+// mode. Anything other than transactional or lazy is heap-only (the empty mode),
+// so an explicit "off" disables the store.
+func columnarSpecMode(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "transactional":
+		return "transactional"
+	case "lazy":
+		return "lazy"
+	default:
+		return ""
 	}
 }
 
