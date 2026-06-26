@@ -69,6 +69,38 @@ func BenchmarkPipelineUnwind(b *testing.B) {
 	}
 }
 
+// BenchmarkLookupEquality joins 1000 input documents to a foreign collection by an
+// equality on the join field. The foreign collection is hashed once, so the cost
+// scales with local + foreign rather than local * foreign (spec 2061 doc 12 §11.4).
+func BenchmarkLookupEquality(b *testing.B) {
+	local := make([]bson.Raw, 1000)
+	for i := range local {
+		local[i] = bson.NewBuilder().AppendInt32("_id", int32(i)).AppendInt32("fk", int32(i)).Build()
+	}
+	foreign := make([]bson.Raw, 5000)
+	for i := range foreign {
+		foreign[i] = bson.NewBuilder().AppendInt32("_id", int32(i)).AppendString("v", "x").Build()
+	}
+	env := &Env{Read: func(string) ([]bson.Raw, error) { return foreign, nil }}
+	body := bson.NewBuilder().
+		AppendString("from", "f").
+		AppendString("localField", "fk").
+		AppendString("foreignField", "_id").
+		AppendString("as", "joined").
+		Build()
+	p, err := Compile([]bson.Raw{stageD("$lookup", body)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := p.RunWith(local, 0, env); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // stageMatchGTE builds {$match: {a: {$gte: 500}}}.
 func stageMatchGTE() bson.Raw {
 	return bson.NewBuilder().AppendDocument("$match",
